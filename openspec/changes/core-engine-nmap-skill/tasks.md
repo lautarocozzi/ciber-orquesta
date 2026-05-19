@@ -25,20 +25,20 @@ Chain strategy: pending
 
 ## Phase 1: Foundation
 
-- [ ] 1.1 `git init` + create dirs: `engine/`, `skills/nmap/sub-processes/`, `activos/`, `workflows/`, `reports/`, `state/`, `events/`, `notifications/` with `.gitkeep`
-- [ ] 1.2 Install apt deps: nuclei, httpx-toolkit, testssl.sh, ffuf, jq, gvm-tools; verify via `command -v`
-- [ ] 1.3 Install pip deps: PyYAML, requests, jinja2, rich, aiohttp, markdown; verify `python3 -c "import <pkg>"`
-- [ ] 1.4 Create `activos/example.yaml` — target definition with ip, hostname, tags, environment
+- [x] 1.1 `git init` + create dirs: `engine/`, `skills/nmap/sub-processes/`, `activos/`, `workflows/`, `reports/`, `state/`, `events/`, `notifications/` with `.gitkeep`
+- [x] 1.2 Install apt deps: nuclei, httpx-toolkit, testssl.sh, ffuf, jq, gvm-tools; verify via `command -v`
+- [x] 1.3 Install pip deps: PyYAML, requests, jinja2, rich, aiohttp, markdown; verify `python3 -c "import <pkg>"`
+- [x] 1.4 Create `activos/example.yaml` — target definition with ip, hostname, tags, environment
 
 ## Phase 2: Engine Core
 
-- [ ] 2.1 Create `engine/requirements.txt` + `engine/__init__.py`
-- [ ] 2.2 Create `engine/state.py` — `read_state()`/`write_state()` with `flock` + atomic rename
-- [ ] 2.3 Create `engine/event_bus.py` — write `events/{skill}/{scan_id}.json`; inotify + polling watcher on `state/`
-- [ ] 2.4 Create `engine/skill_loader.py` — scan `skills/*/skill.yaml`, validate schema, `command -v` deps, cache
-- [ ] 2.5 Create `engine/main_manager.py` — spawn MAIN subprocesses, track PIDs, 3-tier retry logic
-- [ ] 2.6 Create `engine/workflow.py` — read `workflows/*.yaml`, resolve DAG, dispatch steps
-- [ ] 2.7 Create `engine/main.py` — argparse (--target, --workflow), load skills, event loop, execute workflow
+- [x] 2.1 Create `engine/requirements.txt` + `engine/__init__.py`
+- [x] 2.2 Create `engine/state.py` — `read_state()`/`write_state()` with `flock` + atomic rename
+- [x] 2.3 Create `engine/event_bus.py` — write `events/{skill}/{scan_id}.json`; inotify + polling watcher on `state/`
+- [x] 2.4 Create `engine/skill_loader.py` — scan `skills/*/skill.yaml`, validate schema, `command -v` deps, cache
+- [x] 2.5 Create `engine/main_manager.py` — spawn MAIN subprocesses, track PIDs, 3-tier retry logic
+- [x] 2.6 Create `engine/workflow.py` — read `workflows/*.yaml`, resolve DAG, dispatch steps
+- [x] 2.7 Create `engine/main.py` — argparse (--target, --workflow), load skills, event loop, execute workflow
 
 ## Phase 3: Nmap Skill
 

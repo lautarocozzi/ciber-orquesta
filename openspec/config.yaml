@@ -1,0 +1,39 @@
+# openspec/config.yaml
+schema: spec-driven
+
+context: |
+  Project: kali — Security orchestration and attack-vector automation platform.
+  Stack: Kali Linux Rolling, shell/bash, security tooling (nmap, nuclei, testssl,
+    OpenVAS, ZAP, etc.).
+  Architecture: Script-based security tool orchestration, no app framework.
+  Testing: None detected — no test runner, linter, type checker, or formatter.
+    Verification is manual (execution-based). Strict TDD is disabled.
+  Style: Shell scripts, bash, config-driven tool chaining — not a standard
+    dev project.
+
+rules:
+  proposal:
+    - Include rollback plan for risky changes
+    - Specify security tool dependencies and version requirements
+  specs:
+    - Use Given/When/Then for scenarios
+    - Use RFC 2119 keywords (MUST, SHALL, SHOULD, MAY)
+    - Include tool invocation examples where relevant
+  design:
+    - Include execution flow diagrams for complex orchestration
+    - Document architecture decisions with rationale
+    - Reference specific security tools and their configs
+  tasks:
+    - Group by phase, use hierarchical numbering
+    - Keep tasks completable in one session
+    - Specify tool installation prerequisites where needed
+  apply:
+    - Follow existing shell conventions
+    tdd: false
+    test_command: "bash -n"  # syntax check available
+  verify:
+    test_command: ""
+    build_command: ""
+    coverage_threshold: 0
+  archive:
+    - Warn before merging destructive deltas

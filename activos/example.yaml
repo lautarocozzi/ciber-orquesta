@@ -1,0 +1,14 @@
+# activos/example.yaml
+# Example target definition for the orchestration platform.
+# Each activo represents a single asset with metadata for workflow routing.
+---
+ip: 10.0.0.1
+hostname: webserver.example.local
+tags:
+  - web
+  - production
+  - dmz
+environment: production
+description: "Production web server in DMZ"
+scan_profile: default
+owner: security-team

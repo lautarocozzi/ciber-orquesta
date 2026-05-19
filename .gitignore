@@ -1,0 +1,73 @@
+# System files
+.*.swp
+.*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+*.egg
+.venv/
+venv/
+
+# Reports (generated)
+reports/*
+!reports/.gitkeep
+
+# State (generated)
+state/*
+!state/.gitkeep
+
+# Events (generated)
+events/*
+!events/.gitkeep
+
+# Notifications (generated)
+notifications/*
+!notifications/.gitkeep
+
+# IDE
+.idea/
+.vscode/
+*.sublime-*
+
+# Pre-existing system files (not part of project)
+.npm/
+.ZAP/
+.java/
+.mozilla/
+.gnupg/
+.ssh/
+.local/
+.cache/
+.atl/
+.engram/
+.gentle-ai/
+Desktop/
+Documents/
+Downloads/
+Music/
+Pictures/
+Public/
+Templates/
+Videos/
+*.woff2
+*.pid
+.Xauthority
+.xsession-errors*
+.zsh_history
+.python_history
+.bash_history
+.sudo_as_admin_successful
+.face*
+.bashrc*
+.zprofile
+.zshrc
+.profile
+.dmrc
+.ICEauthority

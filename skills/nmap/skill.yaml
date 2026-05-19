@@ -1,0 +1,151 @@
+# skills/nmap/skill.yaml
+# Nmap skill definition for the core orchestration engine.
+---
+name: nmap
+version: "1.0.0"
+description: >
+  Port scanning, service detection, operating system fingerprinting,
+  and IoT reconnaissance using Nmap. Supports SYN stealth, TCP connect,
+  and UDP scans with conditional IoT NSE script execution.
+
+main_script: "skills/nmap/main.sh"
+
+dependencies:
+  - nmap
+  - jq
+
+inputs:
+  target:
+    type: string
+    required: true
+    description: "Target IP address or hostname (e.g. 10.0.0.1 or scanme.example.org)"
+
+  ports:
+    type: string
+    required: false
+    default: "top-1000"
+    description: >
+      Port specification. Accepted values: "top-1000", "top-100", "top-10",
+      "all" (1-65535), or a comma-separated list like "22,80,443,8080".
+
+  scan_mode:
+    type: enum
+    values: [syn, connect, udp]
+    default: syn
+    description: >
+      Scan technique: "syn" for stealth SYN scan (-sS, requires sudo),
+      "connect" for TCP connect scan (-sT), "udp" for UDP scan (-sU).
+
+  timing:
+    type: integer
+    required: false
+    default: 4
+    description: >
+      Timing template 0-5. Higher values are faster but noisier:
+      0=paranoid, 1=sneaky, 2=polite, 3=normal, 4=aggressive, 5=insane.
+
+  skip_discovery:
+    type: boolean
+    required: false
+    default: false
+    description: >
+      Skip host discovery and treat target as up (-Pn).
+      Useful when firewalls block ICMP probes.
+
+  iot_scripts:
+    type: boolean
+    required: false
+    default: false
+    description: >
+      Enable IoT-specific NSE scripts: RTSP URL brute force,
+      MQTT subscribe, Modbus discovery, and BACnet info.
+
+  extra_nse:
+    type: string
+    required: false
+    default: ""
+    description: >
+      Comma-separated list of additional NSE script names or categories
+      to run during service detection (e.g. "vuln,auth,discovery").
+
+outputs:
+  host_status:
+    type: string
+    description: "Host reachability status: up | down | filtered"
+
+  open_ports:
+    type: list
+    description: >
+      List of discovered open ports. Each entry contains port, protocol,
+      state, service name, and version where detected.
+
+  os_detection:
+    type: map
+    description: >
+      Operating system detection results (vendor, OS family, accuracy)
+      or null if OS detection was inconclusive.
+
+  nse_findings:
+    type: list
+    description: "NSE script findings with script name, output, and severity where applicable."
+
+  fingerprints:
+    type: list
+    description: "Service fingerprints and banner information per open port."
+
+  raw_xml:
+    type: string
+    description: "File path to the raw nmap XML output for downstream consumption."
+
+next_vectors:
+  - condition: "port 443 open"
+    skill: testssl
+    weight: 80
+    reason: "TLS certificate and cipher audit recommended"
+
+  - condition: "port 80 open"
+    skill: httpx
+    weight: 80
+    reason: "HTTP service fingerprinting and technology detection"
+
+  - condition: "port 22 open"
+    skill: ssh-audit
+    weight: 50
+    reason: "SSH configuration audit and banner analysis"
+
+  - condition: "multiple services detected"
+    skill: nuclei
+    weight: 60
+    reason: "Vulnerability scanning across multiple detected services"
+
+  - condition: "port 3306 open"
+    skill: db-audit
+    weight: 70
+    reason: "MySQL database service discovered — follow up with credential testing"
+
+  - condition: "port 5432 open"
+    skill: db-audit
+    weight: 70
+    reason: "PostgreSQL database service discovered — follow up with credential testing"
+
+  - condition: "port 6379 open"
+    skill: db-audit
+    weight: 70
+    reason: "Redis service discovered — follow up with credential testing"
+
+  - condition: "port 8080 or 8443 open"
+    skill: httpx
+    weight: 75
+    reason: "Alternative web service port discovered — HTTP fingerprinting recommended"
+
+  - condition: "host_status is down"
+    skill: none
+    weight: 0
+    reason: "Target unreachable — no further reconnaissance possible"
+
+sub_processes:
+  - port-discovery
+  - service-detection
+  - iot-scripts
+  - analyzer
+  - sysreport

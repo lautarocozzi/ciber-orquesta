@@ -130,6 +130,19 @@ def list_workflows() -> None:
     print()
 
 
+def _resolve_workflow_target(workflow, target: str) -> None:
+    """Resolve ``{{ target }}`` template variables in workflow steps.
+
+    Modifies each step's targets list in-place, replacing any occurrence
+    of ``{{ target }}`` with the actual *target* string from the CLI arg.
+    """
+    for step in workflow.steps:
+        step.targets = [
+            t.replace("{{ target }}", target) if isinstance(t, str) else t
+            for t in step.targets
+        ]
+
+
 async def run_scan(
     target: str,
     workflow_name: str,
@@ -158,6 +171,9 @@ async def run_scan(
     # Generate scan ID
     import uuid
     scan_id = str(uuid.uuid4())[:8]
+
+    # Resolve template variables in workflow steps
+    _resolve_workflow_target(workflow, target)
 
     # Write initial event
     write_event(

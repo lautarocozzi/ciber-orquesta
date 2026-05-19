@@ -1,0 +1,56 @@
+# workflows/recon-inicial.yaml
+# Initial reconnaissance workflow: single-target nmap scan with sysreport.
+#
+# This is the first workflow in a typical engagement pipeline. It performs
+# port discovery, service detection, and generates a structured sysreport.
+# Additional steps can be appended for deeper reconnaissance without
+# modifying the existing nmap step.
+#
+# Usage:
+#   python3 engine/main.py --target <IP> --workflow recon-inicial
+#   python3 engine/main.py --target 10.0.0.1 --workflow recon-inicial
+---
+name: recon-inicial
+description: >
+  Initial reconnaissance — single-target nmap port scan, service detection,
+  and sysreport generation. Covers top-1000 ports with SYN stealth scan by
+  default. Results are persisted to state/ and reports/ directories.
+version: "1.0.0"
+scan_profile: default
+
+steps:
+  - id: nmap-scan
+    skill: nmap
+    sub_process: skills/nmap/main.sh
+    targets:
+      - "{{ target }}"
+    parameters:
+      ports: top-1000
+      scan_mode: syn
+      timing: 4
+      skip_discovery: false
+      iot_scripts: false
+    depends_on: []
+    timeout: 600
+    metadata:
+      description: "Nmap port discovery + service detection + sysreport"
+      phase: reconnaissance
+      critical: true
+
+# Rollback configuration: 3-tier retry with graceful degradation
+rollback:
+  max_retries: 3
+  relax_on_retry: true
+  on_failure: stop
+  tier1:
+    description: "Direct retry with same parameters"
+    max_attempts: 3
+    backoff_seconds: 1
+  tier2:
+    description: "Relaxed mode — skip discovery (-Pn), reduce timing"
+    triggers_after: tier1_exhausted
+    max_attempts: 2
+  tier3:
+    description: "Record failure with full context, stop pipeline"
+    triggers_after: tier2_exhausted
+    action: stop_pipeline

@@ -62,7 +62,7 @@ class MainManager:
 
     def __init__(self, max_tier1_retries: int = 3):
         self.max_tier1_retries = max_tier1_retries
-        self._running_pids: dict[str, int] = {}  # key: f"{scan_id}/{sub_process}"
+        self._running_pids: dict[str, tuple[int, float]] = {}  # key: f"{scan_id}/{sub_process}" → (pid, start_time_ns)
 
     async def run_sub_process(
         self,
@@ -71,6 +71,8 @@ class MainManager:
         target: str,
         sub_process_path: str,
         parameters: Optional[dict[str, Any]] = None,
+        timeout: Optional[int] = None,
+        env_overrides: Optional[dict[str, str]] = None,
     ) -> ProcessResult:
         """Execute a sub-process MAIN with 3-tier rollback.
 
@@ -80,6 +82,7 @@ class MainManager:
             target: Target IP or hostname.
             sub_process_path: Path to the sub-process executable/script.
             parameters: Optional dict of parameters passed as env vars.
+            timeout: Optional timeout in seconds for the sub-process.
 
         Returns:
             ProcessResult with final status and error context.
@@ -97,6 +100,7 @@ class MainManager:
             )
             result = await self._execute_process(
                 scan_id, skill, target, sub_process_path, params, process_key,
+                timeout=timeout, env_overrides=env_overrides,
             )
             if result.status == ProcessStatus.DONE:
                 result.retry_tier = RetryTier.TIER1_RETRY if attempt > 1 else None
@@ -119,6 +123,7 @@ class MainManager:
         )
         tier2_result = await self._try_sub_process_alternatives(
             scan_id, skill, target, sub_process_path, params,
+            env_overrides=env_overrides,
         )
         if tier2_result.status == ProcessStatus.DONE:
             tier2_result.retry_tier = RetryTier.TIER2_ESCALATE
@@ -155,6 +160,8 @@ class MainManager:
         sub_process_path: str,
         parameters: dict[str, Any],
         process_key: str,
+        timeout: Optional[int] = None,
+        env_overrides: Optional[dict[str, str]] = None,
     ) -> ProcessResult:
         """Low-level process execution with PID tracking."""
         env = dict(os.environ)
@@ -163,7 +170,11 @@ class MainManager:
             "SKILL": skill,
             "TARGET": target,
             "SUB_PROCESS": sub_process_path,
+            "STATE_DIR": os.environ.get("STATE_DIR", str(_STATE_DIR)),
+            "REPORTS_DIR": os.environ.get("REPORTS_DIR", "reports"),
         })
+        if env_overrides:
+            env.update(env_overrides)
         for k, v in parameters.items():
             env[f"PARAM_{k.upper()}"] = str(v)
 
@@ -184,12 +195,37 @@ class MainManager:
                 error_context={"error": f"Executable not found: {sub_process_path}"},
             )
 
-        self._running_pids[process_key] = proc.pid if proc.pid else 0
+        pid = proc.pid if proc.pid else 0
+        start_time_ns = 0.0
+        if pid > 0:
+            try:
+                start_time_ns = os.stat(f'/proc/{pid}').st_ctime_ns
+            except OSError:
+                pass  # /proc inaccessible or process already gone
+        self._running_pids[process_key] = (pid, start_time_ns)
 
         try:
-            stdout, stderr = await proc.communicate()
+            if timeout is not None:
+                stdout, stderr = await asyncio.wait_for(
+                    proc.communicate(), timeout=timeout,
+                )
+            else:
+                stdout, stderr = await proc.communicate()
+        except asyncio.TimeoutError:
+            await self._kill_process(process_key)
+            return ProcessResult(
+                scan_id=scan_id,
+                skill=skill,
+                target=target,
+                sub_process=sub_process_path,
+                status=ProcessStatus.FAILED,
+                error_context={
+                    "error": f"Process timed out after {timeout}s",
+                    "timeout": timeout,
+                },
+            )
         except asyncio.CancelledError:
-            self._kill_process(process_key)
+            await self._kill_process(process_key)
             return ProcessResult(
                 scan_id=scan_id,
                 skill=skill,
@@ -202,7 +238,9 @@ class MainManager:
 
         status = ProcessStatus.DONE if proc.returncode == 0 else ProcessStatus.FAILED
 
-        self._write_pid_record(scan_id, skill, sub_process_path, proc.returncode)
+        await asyncio.to_thread(
+            self._write_pid_record, scan_id, skill, sub_process_path, proc.returncode,
+        )
 
         return ProcessResult(
             scan_id=scan_id,
@@ -222,31 +260,33 @@ class MainManager:
         target: str,
         sub_process_path: str,
         parameters: dict[str, Any],
+        env_overrides: Optional[dict[str, str]] = None,
     ) -> ProcessResult:
         """Tier 2: Search for alternative sub-process scripts.
 
-        Checks the same skill's ``sub_processes/`` directory for variant names
-        (e.g. ``nmap-light``, ``quick-scan``).
+        Looks for scripts with ``fallback``, ``light``, or ``quick`` in the
+        name within the same directory (e.g. ``port-discovery-fallback.sh``).
+        Avoids grabbing unrelated sibling scripts.
         """
         base_dir = Path(sub_process_path).parent
         base_name = Path(sub_process_path).stem
 
-        # Look for alternative scripts in the same directory
-        alternatives = list(base_dir.glob("*.sh")) + list(base_dir.glob("*.py"))
-        # Exclude the original
-        alternatives = [a for a in alternatives if str(a) != sub_process_path]
-        # Prioritise names containing "quick", "light", "fallback"
-        alternatives.sort(
-            key=lambda p: (
-                0 if any(kw in p.stem for kw in ["quick", "light", "fallback"]) else 1,
-                p.stem,
-            )
-        )
+        # Only look for named fallback/light/quick variants of the same sub-process
+        alternatives = []
+        search_dirs = [base_dir, base_dir / "sub-processes"]
+        for search_dir in search_dirs:
+            for suffix in ["fallback", "light", "quick"]:
+                candidates = (
+                    list(search_dir.glob(f"{base_name}-{suffix}.sh")) +
+                    list(search_dir.glob(f"{base_name}-{suffix}.py"))
+                )
+                alternatives.extend(candidates)
 
         for alt in alternatives:
             logger.info("Tier 2: Trying alternative %s", alt)
             alt_result = await self._execute_process(
                 scan_id, skill, target, str(alt), parameters, f"{scan_id}/{alt}",
+                env_overrides=env_overrides,
             )
             if alt_result.status == ProcessStatus.DONE:
                 return alt_result
@@ -293,23 +333,61 @@ class MainManager:
         except OSError as exc:
             logger.warning("Failed to write PID record: %s", exc)
 
-    def _kill_process(self, process_key: str) -> None:
-        """Send SIGTERM to a tracked process, then SIGKILL after 5s."""
-        pid = self._running_pids.get(process_key)
-        if pid and pid > 0:
-            try:
-                os.kill(pid, signal.SIGTERM)
-                # Allow 5s grace period
-                time.sleep(5)
-                os.kill(pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-            except OSError as exc:
-                logger.warning("Failed to kill process %d: %s", pid, exc)
-            finally:
-                self._running_pids.pop(process_key, None)
+    async def _kill_process(self, process_key: str) -> None:
+        """Send SIGTERM to a tracked process, then SIGKILL after 5s.
 
-    def cancel_scan(self, scan_id: str) -> int:
+        Uses process start time (from /proc/{pid}) to detect PID recycling:
+        before sending SIGKILL, verifies the process at that PID is still the
+        same one we spawned. Falls back to basic existence check if start time
+        was not recorded (/proc unavailable).
+        """
+        entry = self._running_pids.get(process_key)
+        if not entry:
+            return
+        pid, start_time_ns = entry
+        if pid <= 0:
+            return
+
+        try:
+            os.kill(pid, signal.SIGTERM)
+            # Allow 5s grace period — use asyncio.sleep to avoid blocking
+            await asyncio.sleep(5)
+
+            # Check if process still exists AND hasn't been PID-recycled.
+            # Use os.stat on /proc/{pid} to get current start_time for comparison.
+            if start_time_ns > 0:
+                # We have a recorded start time — verify it matches
+                try:
+                    current_ctime = os.stat(f'/proc/{pid}').st_ctime_ns
+                    if current_ctime != start_time_ns:
+                        logger.warning(
+                            "PID %d start time changed (%.0f \u2192 %.0f) \u2014 "
+                            "process recycled, skipping SIGKILL",
+                            pid, start_time_ns, current_ctime,
+                        )
+                        return
+                except OSError:
+                    # /proc/{pid} doesn't exist — process exited during grace period
+                    return
+                # Start time matches — process is the same one, send SIGKILL
+                os.kill(pid, signal.SIGKILL)
+            else:
+                # Fallback: no recorded start time (/proc was unavailable),
+                # use basic existence check
+                try:
+                    os.kill(pid, 0)
+                except ProcessLookupError:
+                    # Process exited gracefully during grace period
+                    return
+                os.kill(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        except OSError as exc:
+            logger.warning("Failed to kill process %d: %s", pid, exc)
+        finally:
+            self._running_pids.pop(process_key, None)
+
+    async def cancel_scan(self, scan_id: str) -> int:
         """Cancel all running processes for a given scan_id.
 
         Args:
@@ -321,7 +399,7 @@ class MainManager:
         count = 0
         for process_key in list(self._running_pids.keys()):
             if process_key.startswith(f"{scan_id}/"):
-                self._kill_process(process_key)
+                await self._kill_process(process_key)
                 count += 1
         return count
 
@@ -333,16 +411,38 @@ class MainManager:
     def cleanup_zombie_pids(self) -> int:
         """Clean up PID records where the process no longer exists.
 
+        Uses start-time comparison (when available) to detect PID recycling:
+        if the process at the tracked PID has a different start time, the
+        original process is gone and the PID was reused.
+
         Returns:
             Number of stale records cleaned.
         """
         cleaned = 0
         for process_key in list(self._running_pids.keys()):
-            pid = self._running_pids[process_key]
-            if pid and pid > 0:
+            pid, start_time_ns = self._running_pids[process_key]
+            if pid <= 0:
+                self._running_pids.pop(process_key, None)
+                cleaned += 1
+                continue
+
+            stale = False
+            try:
+                os.kill(pid, 0)  # Test if process exists
+            except OSError:
+                stale = True
+
+            if not stale and start_time_ns > 0:
+                # Process exists — verify it's the same one
                 try:
-                    os.kill(pid, 0)  # Test if process exists
+                    current_ctime = os.stat(f'/proc/{pid}').st_ctime_ns
+                    if current_ctime != start_time_ns:
+                        stale = True
                 except OSError:
-                    self._running_pids.pop(process_key, None)
-                    cleaned += 1
+                    stale = True  # /proc inaccessible, assume stale
+
+            if stale:
+                self._running_pids.pop(process_key, None)
+                cleaned += 1
+
         return cleaned

@@ -6,6 +6,7 @@ using topological sort, and dispatches each step through the MainManager.
 """
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -21,6 +22,16 @@ from engine.state import read_state, write_state
 logger = logging.getLogger(__name__)
 
 _WORKFLOWS_DIR = Path(os.environ.get("WORKFLOWS_DIR", "workflows"))
+
+
+def _targets_key(targets: list[str]) -> str:
+    """Deterministic hash key for a target set (first 8 hex chars of SHA-1).
+
+    Sorts case-insensitively so identical target sets in any order produce
+    the same key — dedup and collision-free step ids rely on this.
+    """
+    joined = "|".join(sorted(targets, key=lambda t: (t.lower(), t)))
+    return hashlib.sha1(joined.encode("utf-8")).hexdigest()[:8]
 
 
 class WorkflowValidationError(Exception):
@@ -161,9 +172,11 @@ class WorkflowEngine:
     ) -> int:
         """Read next_vectors.json from completed anchor steps and inject new steps.
 
-        For each next_vector whose skill exists via SkillLoader and is NOT
-        already in the workflow, create a new WorkflowStep that depends on the
-        anchor step.
+        Vectors may propose NEW targets (e.g. discovered subdomains); those
+        use the vector's targets (capped), bypass the static skill-name skip,
+        and dedup on (skill, sorted-targets). Vectors without targets fall
+        back to the anchor's targets and keep the original skip rules. Each
+        expanded step depends on the anchor step.
 
         Returns:
             Number of new steps injected.
@@ -219,10 +232,40 @@ class WorkflowEngine:
                     if not skill_name:
                         continue
 
-                    # Skip if skill is already used in workflow
-                    existing_skills = {s.skill for s in workflow.steps}
-                    if skill_name in existing_skills:
-                        continue
+                    # Per-vector targets (A): a vector may propose NEW targets
+                    # (e.g. discovered subdomains). Validate (list of non-empty
+                    # strings), order deterministically, and cap by
+                    # max_targets_per_vector. Fall back to the anchor's targets
+                    # when absent or empty — preserving pre-change behavior.
+                    max_per_vec = int(
+                        workflow.expansion.get("max_targets_per_vector", 10)
+                    )
+                    proposed = vector.get("targets")
+                    valid = [
+                        t for t in (proposed or [])
+                        if isinstance(t, str) and t.strip()
+                    ]
+                    if valid:
+                        new_targets = sorted(
+                            valid, key=lambda t: (t.lower(), t)
+                        )[:max_per_vec]
+                        carries_targets = True
+                    else:
+                        new_targets = list(anchor.targets)
+                        carries_targets = False
+
+                    # Dedup (B): vectors WITHOUT targets keep the original
+                    # skip-if-skill-already-in-workflow rule for backward
+                    # compatibility. Vectors WITH targets deliberately BYPASS
+                    # that check — the same skill may expand again when it
+                    # proposes a different target set — and instead dedup on
+                    # the (skill, targets-key) pair via the hashed id below
+                    # (identical pairs re-propose the same id and are skipped).
+                    if not carries_targets:
+                        # Skip if skill is already used in workflow
+                        existing_skills = {s.skill for s in workflow.steps}
+                        if skill_name in existing_skills:
+                            continue
 
                     # Verify skill exists via SkillLoader
                     skill_def = self.skill_loader.get_skill(skill_name)
@@ -232,24 +275,37 @@ class WorkflowEngine:
                         )
                         continue
 
-                    # Create a new step for this expanded skill
-                    new_step_id = f"exp-{skill_name}-{anchor.id}"
+                    # Collision-free id (C): hash the sorted target set so
+                    # distinct target sets get distinct ids (exp-{skill}-
+                    # {anchor.id}-{targets_key}) and re-proposing an identical
+                    # set hits the already-added skip below.
+                    new_step_id = (
+                        f"exp-{skill_name}-{anchor.id}-"
+                        f"{_targets_key(new_targets)}"
+                    )
                     if workflow.get_step(new_step_id):
                         continue  # already added
+
+                    # Timeout (D): env-configurable, replaces the hardcoded
+                    # 480. Scans self-cap internally; no time restriction
+                    # below 2h per target per skill unless explicitly
+                    # overridden by STEP_TIMEOUT_SECONDS.
+                    try:
+                        exp_timeout = int(
+                            os.environ.get("STEP_TIMEOUT_SECONDS", "7200")
+                        )
+                    except ValueError:
+                        exp_timeout = 7200
 
                     step_data = {
                         "id": new_step_id,
                         "skill": skill_name,
                         "sub_process": skill_def.main_script,
-                        "targets": list(anchor.targets),  # same target as anchor
+                        "targets": new_targets,  # vector targets or anchor fallback
                         "parameters": {},
                         "depends_on": [anchor.id],
                         "condition": "prev.success",
-                        # Expanded steps may map to a meta-skill chain (e.g.
-                        # skills/nikto/main.sh runs 3 scans + analyzer explicitly).
-                        # Give the full pipeline room: scans cap internally at
-                        # ~100s each, so allow 3 scans + analysis + margin.
-                        "timeout": 480,
+                        "timeout": exp_timeout,
                         "metadata": {
                             "description": vector.get("reason", f"Auto-expanded {skill_name}"),
                             "phase": "automated-expansion",

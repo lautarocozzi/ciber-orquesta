@@ -1,12 +1,21 @@
 # skills/nmap/skill.yaml
-# Nmap skill definition for the core orchestration engine.
----
+# Nmap skill definition — delegator that orchestrates sub-skills.
+#
+# This skill now acts as a thin delegator, calling sub-skills in sequence:
+#   nmap-port-discovery → nmap-service-detection → [nmap-iot-scripts] →
+#   nmap-analyzer → nmap-sysreport
+#
+# Backward compatible: existing workflows calling skills/nmap/main.sh
+# produce the same outputs at state/nmap/{scan_id}/ and
+# reports/{target}/nmap/{scan_id}/.
+# ---
 name: nmap
 version: "1.0.0"
 description: >
   Port scanning, service detection, operating system fingerprinting,
-  and IoT reconnaissance using Nmap. Supports SYN stealth, TCP connect,
-  and UDP scans with conditional IoT NSE script execution.
+  and IoT reconnaissance using Nmap. Delegates to sub-skills:
+  nmap-port-discovery, nmap-service-detection, nmap-iot-scripts,
+  nmap-analyzer, and nmap-sysreport.
 
 main_script: "skills/nmap/main.sh"
 
@@ -143,9 +152,5 @@ next_vectors:
     weight: 0
     reason: "Target unreachable — no further reconnaissance possible"
 
-sub_processes:
-  - port-discovery
-  - service-detection
-  - iot-scripts
-  - analyzer
-  - sysreport
+# Sub-skills are now independent: skills/nmap-port-discovery, skills/nmap-service-detection,
+# skills/nmap-iot-scripts, skills/nmap-analyzer, skills/nmap-sysreport

@@ -41,7 +41,7 @@ NMAP_FILE="${OUTPUT_DIR}/port-discovery.nmap"
 
 if [ -f "$GNMAP_FILE" ]; then
   # Gnmap format: Host: 10.0.0.1 () Ports: 22/open/tcp//ssh//, 80/open/tcp//http//
-  PORT_LIST="$(grep -oP '\d+/open/tcp' "$GNMAP_FILE" | cut -d/ -f1 | tr '\n' ',' | sed 's/,$//')"
+  PORT_LIST="$(grep -oP '\d+/open/(tcp|udp)' "$GNMAP_FILE" | cut -d/ -f1 | tr '\n' ',' | sed 's/,$//')"
 elif [ -f "$XML_FILE" ]; then
   # Parse XML for open ports
   PORT_LIST="$(
@@ -99,7 +99,14 @@ NMAP_CMD=(nmap)
 SCAN_FLAG="-sV"
 # For UDP mode, we need -sU instead of -sS/-sT
 case "${PARAM_SCAN_MODE}" in
-  syn)    SCAN_FLAG="-sS -sV" ;;
+  syn)
+    if [ "$(id -u)" -ne 0 ]; then
+      log_warn "Not running as root — falling back from -sS to -sT (connect scan)"
+      SCAN_FLAG="-sT -sV"
+    else
+      SCAN_FLAG="-sS -sV"
+    fi
+    ;;
   connect) SCAN_FLAG="-sT -sV" ;;
   udp)    SCAN_FLAG="-sU -sV" ;;
 esac
@@ -110,6 +117,7 @@ NSE_SCRIPTS="default"
 if [ -n "${PARAM_EXTRA_NSE}" ]; then
   NSE_SCRIPTS="${NSE_SCRIPTS},${PARAM_EXTRA_NSE}"
 fi
+# NOTE: Guard above prevents trailing comma when PARAM_EXTRA_NSE is empty.
 
 NMAP_CMD+=(
   ${SCAN_FLAG}
@@ -130,6 +138,12 @@ set -e
 
 if [ "${NMAP_EXIT}" -eq 0 ]; then
   log_info "Service detection completed successfully"
+  exit 0
+fi
+# nmap exit code 1 means ALL ports filtered — common, not an error.
+# Treat as success with empty result. Only exit code 2+ is a real error.
+if [ "${NMAP_EXIT}" -eq 1 ]; then
+  log_info "Service detection completed — all ports filtered (nmap exit 1)"
   exit 0
 fi
 

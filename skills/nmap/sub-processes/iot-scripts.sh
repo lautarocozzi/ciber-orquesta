@@ -88,8 +88,19 @@ IOT_NSE_SCRIPTS="rtsp-url-brute,mqtt-subscribe,modbus-discover,bacnet-info"
 
 OUTPUT_PREFIX="${OUTPUT_DIR}/iot-scripts"
 
+# BACnet (47808) is UDP-only; add UDP scan and protocol prefixes when BACnet port is present
+UDP_FLAG=""
+if [[ "${IOT_PORTS}" == *"47808"* ]]; then
+  UDP_FLAG="-sU"
+  # Prepend protocol prefixes so nmap scans each port on the correct protocol:
+  # TCP ports (502,554,1883,8883) get T:, UDP port 47808 gets U:
+  IOT_PORTS="$(echo "${IOT_PORTS}" | sed -e 's/^/T:/' -e 's/,/,T:/g' -e 's/T:47808/U:47808/')"
+  log_info "BACnet (47808) detected — adding UDP scan flag, port list: ${IOT_PORTS}"
+fi
+
 NMAP_CMD+=(
   -sV
+  ${UDP_FLAG}
   --script "${IOT_NSE_SCRIPTS}"
   -p "${IOT_PORTS}"
   -T"${PARAM_TIMING}"

@@ -86,9 +86,14 @@ OUTPUT_PREFIX="${OUTPUT_DIR}/port-discovery"
 log_info "Scanning ${TARGET} ports=${PORT_LABEL} mode=${PARAM_SCAN_MODE} timing=${PARAM_TIMING}"
 
 # Build nmap command
-# Do NOT wrap with sudo — nmap handles non-root fallback internally.
-# When run without privileges, -sS (SYN) degrades gracefully to -sT (connect).
+# NOTE: -sS (SYN) requires root privileges. Without root, nmap will fail.
+# If not root and scan_mode=syn, auto-fallback to -sT (connect scan).
 # Explicit sudo requires a TTY which may not be available in sub-process mode.
+if [ "$PARAM_SCAN_MODE" = "syn" ] && [ "$(id -u)" -ne 0 ]; then
+  log_warn "Not running as root — falling back from SYN scan (-sS) to Connect scan (-sT)"
+  PARAM_SCAN_MODE="connect"
+  SCAN_FLAG="-sT"
+fi
 NMAP_CMD=(nmap)
 
 NMAP_CMD+=(
@@ -111,6 +116,12 @@ set -e
 
 if [ "${NMAP_EXIT}" -eq 0 ]; then
   log_info "Port discovery completed successfully"
+  exit 0
+fi
+# nmap exit code 1 means ALL ports filtered — common, not an error
+# Treat as success with empty result. Only exit code 2+ is a real error.
+if [ "${NMAP_EXIT}" -eq 1 ]; then
+  log_info "Port discovery completed — all ports filtered (nmap exit 1)"
   exit 0
 fi
 
@@ -136,6 +147,11 @@ if [ "${NMAP_EXIT}" -ne 0 ] && [ "${PARAM_SKIP_DISCOVERY}" != "true" ]; then
 
   if [ "${NMAP_EXIT}" -eq 0 ]; then
     log_info "Port discovery succeeded with -Pn"
+    exit 0
+  fi
+  # nmap exit code 1 = all ports filtered, still a valid result
+  if [ "${NMAP_EXIT}" -eq 1 ]; then
+    log_info "Port discovery completed with -Pn — all ports filtered (nmap exit 1)"
     exit 0
   fi
 fi

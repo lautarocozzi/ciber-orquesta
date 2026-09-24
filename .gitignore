@@ -48,6 +48,13 @@ notifications/*
 .atl/
 .engram/
 .gentle-ai/
+.config/
+.dbus/
+.pki/
+.subversion/
+.codegraph/
+.wget-hsts
+.bash_logout
 Desktop/
 Documents/
 Downloads/

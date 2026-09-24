@@ -1,10 +1,21 @@
 # workflows/recon-inicial.yaml
-# Initial reconnaissance workflow: single-target nmap scan with sysreport.
+# Initial reconnaissance workflow: sub-skill DAG for single-target nmap scan.
 #
-# This is the first workflow in a typical engagement pipeline. It performs
-# port discovery, service detection, and generates a structured sysreport.
-# Additional steps can be appended for deeper reconnaissance without
-# modifying the existing nmap step.
+# Pipeline:
+#   port-discovery → service-detection → [iot-scripts*] → analyzer → sysreport
+#
+#   * iot-scripts runs before analyzer (serialized via depends_on)
+#
+# This is the first workflow in a typical engagement pipeline. Each sub-skill
+# is an independent skill under skills/nmap-{name}/ with its own main.sh and
+# skill.yaml. Data handoff uses WORKFLOW_SHARED_DIR (set by the engine) with
+# STATE_DIR fallback via read_predecessor_output() from envelope.sh.
+#
+# Backward compat: the original skills/nmap/main.sh delegator still works for
+# direct invocations and produces outputs at state/nmap/{scan_id}/.
+# However, this workflow directly calls each sub-skill as a DAG step rather
+# than going through the delegator, enabling parallel execution and granular
+# status tracking.
 #
 # Usage:
 #   python3 engine/main.py --target <IP> --workflow recon-inicial
@@ -12,16 +23,19 @@
 ---
 name: recon-inicial
 description: >
-  Initial reconnaissance — single-target nmap port scan, service detection,
-  and sysreport generation. Covers top-1000 ports with SYN stealth scan by
-  default. Results are persisted to state/ and reports/ directories.
+  Initial reconnaissance — nmap port scan, service detection, analysis,
+  and sysreport generation via independent sub-skills. Covers top-1000
+  ports with SYN stealth scan by default. Results are persisted to state/
+  and reports/ directories.
 version: "1.0.0"
 scan_profile: default
 
 steps:
-  - id: nmap-scan
-    skill: nmap
-    sub_process: skills/nmap/main.sh
+  # ── Level 0: Sub-skill DAG ──────────────────────────────────────────────
+
+  - id: port-discovery
+    skill: nmap-port-discovery
+    sub_process: skills/nmap-port-discovery/main.sh
     targets:
       - "{{ target }}"
     parameters:
@@ -29,13 +43,75 @@ steps:
       scan_mode: syn
       timing: 4
       skip_discovery: false
-      iot_scripts: false
     depends_on: []
     timeout: 600
     metadata:
-      description: "Nmap port discovery + service detection + sysreport"
+      description: "Nmap port discovery — top-1000 SYN scan"
       phase: reconnaissance
       critical: true
+
+  - id: service-detection
+    skill: nmap-service-detection
+    sub_process: skills/nmap-service-detection/main.sh
+    targets:
+      - "{{ target }}"
+    parameters:
+      scan_mode: syn
+      timing: 4
+    depends_on:
+      - port-discovery
+    condition: "prev.success"
+    timeout: 600
+    metadata:
+      description: "Nmap service version detection on discovered ports"
+      phase: reconnaissance
+
+  - id: iot-scripts
+    skill: nmap-iot-scripts
+    sub_process: skills/nmap-iot-scripts/main.sh
+    targets:
+      - "{{ target }}"
+    parameters:
+      iot_scripts: false
+      scan_mode: syn
+      timing: 4
+    depends_on:
+      - service-detection
+    condition: "prev.success"
+    timeout: 300
+    metadata:
+      description: "IoT protocol NSE scripts (optional — RTSP, MQTT, Modbus, BACnet)"
+      phase: reconnaissance
+
+  - id: analyzer
+    skill: nmap-analyzer
+    sub_process: skills/nmap-analyzer/main.sh
+    targets:
+      - "{{ target }}"
+    parameters: {}
+    depends_on:
+      - service-detection
+      - iot-scripts
+    condition: "prev.success"
+    timeout: 60
+    metadata:
+      description: "Nmap results analysis and consolidation"
+      phase: reconnaissance
+      critical: true
+
+  - id: sysreport
+    skill: nmap-sysreport
+    sub_process: skills/nmap-sysreport/main.sh
+    targets:
+      - "{{ target }}"
+    parameters: {}
+    depends_on:
+      - analyzer
+    condition: "prev.success"
+    timeout: 30
+    metadata:
+      description: "Nmap sysreport generation (YAML + JSON)"
+      phase: reporting
 
 # Rollback configuration: 3-tier retry with graceful degradation
 rollback:

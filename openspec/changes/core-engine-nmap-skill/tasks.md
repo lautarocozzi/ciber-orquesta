@@ -42,19 +42,19 @@ Chain strategy: pending
 
 ## Phase 3: Nmap Skill
 
-- [ ] 3.1 Create `skills/nmap/skill.yaml` — name, version, deps, inputs, outputs, next_vectors, sub_processes
-- [ ] 3.2 Create `skills/nmap/SKILL.md` — AI/human docs with args table, sub-process flow, examples
-- [ ] 3.3 Create `skills/nmap/main.sh` — read event JSON, run sub-process pipeline, write `status.json` per phase
-- [ ] 3.4 Create `skills/nmap/sub-processes/port-discovery.sh` — `nmap -p- -oA`
-- [ ] 3.5 Create `skills/nmap/sub-processes/service-detection.sh` — `nmap -sV -sC` on discovered ports
-- [ ] 3.6 Create `skills/nmap/sub-processes/iot-scripts.sh` — conditional RTSP/MQTT/Modbus NSE scripts
-- [ ] 3.7 Create `skills/nmap/sub-processes/analyzer.sh` — parse nmap output, build `consolidated.json` + next_vectors
-- [ ] 3.8 Create `skills/nmap/sub-processes/sysreport.sh` — invoke engine sysreport generator with scan data
+- [x] 3.1 Create `skills/nmap/skill.yaml` — name, version, deps, inputs, outputs, next_vectors, sub_processes
+- [x] 3.2 Create `skills/nmap/SKILL.md` — AI/human docs with args table, sub-process flow, examples
+- [x] 3.3 Create `skills/nmap/main.sh` — read event JSON, run sub-process pipeline, write `status.json` per phase
+- [x] 3.4 Create `skills/nmap/sub-processes/port-discovery.sh` — `nmap -p- -oA`
+- [x] 3.5 Create `skills/nmap/sub-processes/service-detection.sh` — `nmap -sV -sC` on discovered ports
+- [x] 3.6 Create `skills/nmap/sub-processes/iot-scripts.sh` — conditional RTSP/MQTT/Modbus NSE scripts
+- [x] 3.7 Create `skills/nmap/sub-processes/analyzer.sh` — parse nmap output, build `consolidated.json` + next_vectors
+- [x] 3.8 Create `skills/nmap/sub-processes/sysreport.sh` — invoke engine sysreport generator with scan data
 
 ## Phase 4: Integration
 
-- [ ] 4.1 Create `workflows/recon-inicial.yaml` — single-step nmap DAG, target from activos, top-1000 SYN defaults
-- [ ] 4.2 Verify: engine against localhost, confirm `state/status.json` transitions + `reports/sysreport.yaml` valid
-- [ ] 4.3 Verify: 3-tier rollback with unreachable target, confirm retries → degraded/failed cascade stop
-- [ ] 4.4 Verify: crash recovery — kill engine mid-scan, restart, confirm resume from persisted state files
-- [ ] 4.5 `git add . && git commit -m "feat: core engine + nmap skill"`
+- [x] 4.1 Create `workflows/recon-inicial.yaml` — single-step nmap DAG, target from activos, top-1000 SYN defaults
+- [x] 4.2 Verify: engine against localhost, confirm `state/status.json` transitions + `reports/sysreport.yaml` valid
+- [x] 4.3 Verify: 3-tier rollback with unreachable target, confirm retries → degraded/failed cascade stop
+- [x] 4.4 Verify: crash recovery — kill engine mid-scan, restart, confirm resume from persisted state files
+- [x] 4.5 `git add . && git commit -m "feat(nmap): nmap skill with sub-processes and recon workflow"`

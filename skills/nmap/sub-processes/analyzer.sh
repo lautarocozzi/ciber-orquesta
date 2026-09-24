@@ -22,6 +22,7 @@ TARGET="${TARGET:-}"
 SCAN_ID="${SCAN_ID:-}"
 STATE_DIR="${STATE_DIR:-state}"
 SKILL="${SKILL:-nmap}"
+PARTIAL="${PARTIAL:-false}"
 
 if [ -z "$TARGET" ] || [ -z "$SCAN_ID" ]; then
   log_error "TARGET and SCAN_ID must be set"
@@ -70,43 +71,81 @@ for src in "${PARSE_SOURCES[@]}"; do
   case "$src" in
     *.xml)
       # Parse XML: extract portid, protocol, state, service name, product, version
-      while IFS='|' read -r portid protocol state service product version; do
+      while IFS=$'\x1f' read -r portid protocol state service product version; do
         if [ -n "$portid" ]; then
+          # Sanitize service/version for JSON (nmap banners can contain ", \, control chars)
+          # Order: backslash first, then quote, then control chars
+          # (control chars after backslash so \\t doesn't become \\\\t)
+          service="${service//\\/\\\\}"
+          service="${service//\"/\\\"}"
+          service="${service//$'\t'/\\t}"
+          service="${service//$'\n'/\\n}"
+          service="${service//$'\r'/\\r}"
+          service="${service//$'\b'/\\b}"
+          service="${service//$'\f'/\\f}"
+          product="${product//\\/\\\\}"
+          product="${product//\"/\\\"}"
+          product="${product//$'\t'/\\t}"
+          product="${product//$'\n'/\\n}"
+          product="${product//$'\r'/\\r}"
+          product="${product//$'\b'/\\b}"
+          product="${product//$'\f'/\\f}"
+          version="${version//\\/\\\\}"
+          version="${version//\"/\\\"}"
+          version="${version//$'\t'/\\t}"
+          version="${version//$'\n'/\\n}"
+          version="${version//$'\r'/\\r}"
+          version="${version//$'\b'/\\b}"
+          version="${version//$'\f'/\\f}"
           OPEN_PORTS+=("{\"port\":${portid},\"protocol\":\"${protocol}\",\"state\":\"${state}\",\"service\":\"${service}\",\"version\":\"${version}\"}")
         fi
       done < <(
         awk '
         /<port / {
           portid=""; protocol=""; state=""; service=""; product=""; version=""
-
-          # Extract portid and protocol
           match($0, /portid="([^"]+)"/, a); portid=a[1]
           match($0, /protocol="([^"]+)"/, a); protocol=a[1]
-
-          # Extract state
+          in_port = 1
+          next
+        }
+        in_port && /<state / {
           match($0, /state="([^"]+)"/, a); state=a[1]
-
-          # If we find a service tag (could be on next line or same)
-          if (index($0, "<service ")) {
-            match($0, /name="([^"]+)"/, a); service=a[1]
-            match($0, /product="([^"]+)"/, a); product=a[1]
-            match($0, /version="([^"]+)"/, a); version=a[1]
-          }
+        }
+        in_port && /<service / {
+          match($0, /name="([^"]+)"/, a); service=a[1]
+          match($0, /product="([^"]+)"/, a); product=a[1]
+          match($0, /version="([^"]+)"/, a); version=a[1]
+        }
+        in_port && /<\/port>/ {
           if (portid != "" && state == "open") {
             gsub(/"/, "", portid)
             gsub(/"/, "", protocol)
-            printf "%s|%s|%s|%s|%s|%s\n", portid, protocol, state, service, product, version
+            printf "%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\n", portid, protocol, state, service, product, version
           }
+          in_port = 0
         }
         ' "$src" 2>/dev/null || true
       )
       ;;
     *.nmap)
       # Parse normal nmap output: "80/tcp   open  http  Apache httpd 2.4.41"
-      while IFS='|' read -r portid protocol state service version; do
+      while IFS=$'\x1f' read -r portid protocol state service version; do
         if [ -n "$portid" ]; then
-          # Sanitize version for JSON
+          # Sanitize version for JSON (nmap banners can contain ", \, control chars)
+          service="${service//\\/\\\\}"
+          service="${service//\"/\\\"}"
+          service="${service//$'\t'/\\t}"
+          service="${service//$'\n'/\\n}"
+          service="${service//$'\r'/\\r}"
+          service="${service//$'\b'/\\b}"
+          service="${service//$'\f'/\\f}"
+          version="${version//\\/\\\\}"
           version="${version//\"/\\\"}"
+          version="${version//$'\t'/\\t}"
+          version="${version//$'\n'/\\n}"
+          version="${version//$'\r'/\\r}"
+          version="${version//$'\b'/\\b}"
+          version="${version//$'\f'/\\f}"
           OPEN_PORTS+=("{\"port\":${portid},\"protocol\":\"${protocol}\",\"state\":\"${state}\",\"service\":\"${service}\",\"version\":\"${version}\"}")
         fi
       done < <(
@@ -124,7 +163,7 @@ for src in "${PARSE_SOURCES[@]}"; do
             else if (i == 4) version = $i;
             else if (i > 4) version = version " " $i;
           }
-          printf "%s|%s|%s|%s|%s\n", portid, protocol, state, service, version;
+          printf "%s\x1f%s\x1f%s\x1f%s\x1f%s\n", portid, protocol, state, service, version;
         }' 2>/dev/null || true
       )
       ;;
@@ -133,15 +172,23 @@ for src in "${PARSE_SOURCES[@]}"; do
       PORTS_LINE="$(grep 'Ports:' "$src" 2>/dev/null | head -1)" || true
       if [ -n "$PORTS_LINE" ]; then
         # Extract each port entry
-        entries="$(echo "$PORTS_LINE" | grep -oP '\d+/open/tcp[^/]*/[^/]*/[^/]*/' 2>/dev/null)" || true
-        echo "$entries" | while read -r entry; do
+        entries="$(echo "$PORTS_LINE" | grep -oP '\d+/open/[a-z]+[^/]*/[^/]*/[^/]*/' 2>/dev/null)" || true
+        while read -r entry; do
           [ -z "$entry" ] && continue
           PORTID="$(echo "$entry" | cut -d/ -f1)"
           PROTO="$(echo "$entry" | cut -d/ -f3)"
           SERVICE="$(echo "$entry" | cut -d/ -f5)"
+          # Sanitize service for JSON
+          SERVICE="${SERVICE//\\/\\\\}"
+          SERVICE="${SERVICE//\"/\\\"}"
+          SERVICE="${SERVICE//$'\t'/\\t}"
+          SERVICE="${SERVICE//$'\n'/\\n}"
+          SERVICE="${SERVICE//$'\r'/\\r}"
+          SERVICE="${SERVICE//$'\b'/\\b}"
+          SERVICE="${SERVICE//$'\f'/\\f}"
           # Gnmap doesn't have rich version info
           OPEN_PORTS+=("{\"port\":${PORTID},\"protocol\":\"${PROTO}\",\"state\":\"open\",\"service\":\"${SERVICE}\",\"version\":\"\"}")
-        done
+        done <<< "$entries"
       fi
       ;;
   esac
@@ -162,7 +209,23 @@ for xml in "${XML_FILES[@]}"; do
     OS_ACCURACY="$(grep -oP 'accuracy="\K[^"]+' "$xml" 2>/dev/null | head -1)" || true
     OS_VENDOR="$(grep -oP '<osclass vendor="\K[^"]+' "$xml" 2>/dev/null | head -1)" || true
     if [ -n "$OS_MATCH" ]; then
-      OS_DETECTION="{\"os\":\"${OS_MATCH}\",\"vendor\":\"${OS_VENDOR:-""}\",\"accuracy\":${OS_ACCURACY:-0}}"
+      # Sanitize OS values for JSON
+      OS_MATCH="${OS_MATCH//\\/\\\\}"
+      OS_MATCH="${OS_MATCH//\"/\\\"}"
+      OS_MATCH="${OS_MATCH//$'\t'/\\t}"
+      OS_MATCH="${OS_MATCH//$'\n'/\\n}"
+      OS_MATCH="${OS_MATCH//$'\r'/\\r}"
+      OS_MATCH="${OS_MATCH//$'\b'/\\b}"
+      OS_MATCH="${OS_MATCH//$'\f'/\\f}"
+      OS_VENDOR="${OS_VENDOR:-}"
+      OS_VENDOR="${OS_VENDOR//\\/\\\\}"
+      OS_VENDOR="${OS_VENDOR//\"/\\\"}"
+      OS_VENDOR="${OS_VENDOR//$'\t'/\\t}"
+      OS_VENDOR="${OS_VENDOR//$'\n'/\\n}"
+      OS_VENDOR="${OS_VENDOR//$'\r'/\\r}"
+      OS_VENDOR="${OS_VENDOR//$'\b'/\\b}"
+      OS_VENDOR="${OS_VENDOR//$'\f'/\\f}"
+      OS_DETECTION="{\"os\":\"${OS_MATCH}\",\"vendor\":\"${OS_VENDOR}\",\"accuracy\":${OS_ACCURACY:-0}}"
       break
     fi
   fi
@@ -174,21 +237,33 @@ for src in "${XML_FILES[@]}"; do
   case "$src" in
     *.xml)
       if [ -f "$src" ]; then
-        while IFS='|' read -r script_id output; do
+        while IFS=$'\x1f' read -r -d '' script_id output; do
           if [ -n "$script_id" ]; then
-            # Escape for JSON
+            # Escape for JSON: \ first, then ", then control chars
+            output="${output//\\/\\\\}"
             output="${output//\"/\\\"}"
+            output="${output//$'\t'/\\t}"
             output="${output//$'\n'/\\n}"
+            output="${output//$'\r'/\\r}"
+            output="${output//$'\b'/\\b}"
+            output="${output//$'\f'/\\f}"
             NSE_FINDINGS+=("{\"script\":\"${script_id}\",\"output\":\"${output}\"}")
           fi
         done < <(
-          awk '
-          /<script id="/ {
-            if (match($0, /<script id="([^"]+)"/, a)) id = a[1]; else id = ""
-            if (match($0, /output="([^"]+)"/, a)) out = a[1]; else out = ""
-            if (id != "") printf "%s|%s\n", id, out
-          }
-          ' "$src" 2>/dev/null || true
+          python3 -c '
+import sys, xml.etree.ElementTree as ET
+src = sys.argv[1]
+try:
+    tree = ET.parse(src)
+    for host in tree.getroot().findall(".//host"):
+        for script in host.findall(".//script"):
+            sid = script.get("id", "")
+            out = script.get("output", "")
+            if sid:
+                sys.stdout.write(sid + "\x1f" + out + "\x00")
+except Exception:
+    pass
+' "$src" 2>/dev/null || true
         )
       fi
       ;;
@@ -198,20 +273,32 @@ done
 # Also parse iot-scripts NSE output if it exists
 IOT_XML="${OUTPUT_DIR}/iot-scripts.xml"
 if [ -f "$IOT_XML" ]; then
-  while IFS='|' read -r script_id output; do
+  while IFS=$'\x1f' read -r -d '' script_id output; do
     if [ -n "$script_id" ]; then
+      output="${output//\\/\\\\}"
       output="${output//\"/\\\"}"
+      output="${output//$'\t'/\\t}"
       output="${output//$'\n'/\\n}"
+      output="${output//$'\r'/\\r}"
+      output="${output//$'\b'/\\b}"
+      output="${output//$'\f'/\\f}"
       NSE_FINDINGS+=("{\"script\":\"${script_id}\",\"output\":\"${output}\"}")
     fi
   done < <(
-    awk '
-    /<script id="/ {
-      if (match($0, /<script id="([^"]+)"/, a)) id = a[1]; else id = ""
-      if (match($0, /output="([^"]+)"/, a)) out = a[1]; else out = ""
-      if (id != "") printf "%s|%s\n", id, out
-    }
-    ' "$IOT_XML" 2>/dev/null || true
+    python3 -c '
+import sys, xml.etree.ElementTree as ET
+src = sys.argv[1]
+try:
+    tree = ET.parse(src)
+    for host in tree.getroot().findall(".//host"):
+        for script in host.findall(".//script"):
+            sid = script.get("id", "")
+            out = script.get("output", "")
+            if sid:
+                sys.stdout.write(sid + "\x1f" + out + "\x00")
+except Exception:
+    pass
+' "$IOT_XML" 2>/dev/null || true
   )
 fi
 
@@ -221,9 +308,15 @@ for src in "${XML_FILES[@]}"; do
   case "$src" in
     *.xml)
       if [ -f "$src" ]; then
-        while IFS='|' read -r portid fingerprint; do
+        while IFS=$'\x1f' read -r portid fingerprint; do
           if [ -n "$portid" ] && [ -n "$fingerprint" ]; then
+            fingerprint="${fingerprint//\\/\\\\}"
             fingerprint="${fingerprint//\"/\\\"}"
+            fingerprint="${fingerprint//$'\t'/\\t}"
+            fingerprint="${fingerprint//$'\n'/\\n}"
+            fingerprint="${fingerprint//$'\r'/\\r}"
+            fingerprint="${fingerprint//$'\b'/\\b}"
+            fingerprint="${fingerprint//$'\f'/\\f}"
             FINGERPRINTS+=("{\"port\":${portid},\"fingerprint\":\"${fingerprint}\"}")
           fi
         done < <(
@@ -242,7 +335,7 @@ for src in "${XML_FILES[@]}"; do
             if (product != "") fp = fp " " product
             if (version != "") fp = fp " " version
             if (extrainfo != "") fp = fp " (" extrainfo ")"
-            printf "%s|%s\n", portid, fp
+            printf "%s\x1f%s\n", portid, fp
           }
           ' "$src" 2>/dev/null || true
         )
@@ -379,44 +472,121 @@ fi
 # ---- Write consolidated.json --------------------------------------------
 STARTED_AT="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 
-CONSOLIDATED="${OUTPUT_DIR}/consolidated.json"
-cat > "$CONSOLIDATED" <<-CONSEOF
-{
-  "scan_id": "${SCAN_ID}",
-  "target": "${TARGET}",
-  "started_at": "${STARTED_AT}",
-  "host_status": "${HOST_STATUS}",
-  "open_ports": ${OPEN_PORTS_JSON},
-  "os_detection": ${OS_DETECTION},
-  "nse_findings": ${NSE_FINDINGS_JSON},
-  "fingerprints": ${FINGERPRINTS_JSON},
-  "raw_xml": "${RAW_XML}",
-  "next_vectors": ${NEXT_VECTORS_JSON},
-  "port_count": ${PORT_COUNT}
-}
-CONSEOF
+# Escape string variables for safe JSON interpolation in fallback heredocs
+_ESC_SCAN_ID="${SCAN_ID:-}"; _ESC_SCAN_ID="${_ESC_SCAN_ID//\\/\\\\}"; _ESC_SCAN_ID="${_ESC_SCAN_ID//\"/\\\"}"; _ESC_SCAN_ID="${_ESC_SCAN_ID//$'\t'/\\t}"; _ESC_SCAN_ID="${_ESC_SCAN_ID//$'\n'/\\n}"; _ESC_SCAN_ID="${_ESC_SCAN_ID//$'\r'/\\r}"; _ESC_SCAN_ID="${_ESC_SCAN_ID//$'\b'/\\b}"; _ESC_SCAN_ID="${_ESC_SCAN_ID//$'\f'/\\f}"
+_ESC_TARGET="${TARGET:-}"; _ESC_TARGET="${_ESC_TARGET//\\/\\\\}"; _ESC_TARGET="${_ESC_TARGET//\"/\\\"}"; _ESC_TARGET="${_ESC_TARGET//$'\t'/\\t}"; _ESC_TARGET="${_ESC_TARGET//$'\n'/\\n}"; _ESC_TARGET="${_ESC_TARGET//$'\r'/\\r}"; _ESC_TARGET="${_ESC_TARGET//$'\b'/\\b}"; _ESC_TARGET="${_ESC_TARGET//$'\f'/\\f}"
+_ESC_STARTED_AT="${STARTED_AT:-}"; _ESC_STARTED_AT="${_ESC_STARTED_AT//\\/\\\\}"; _ESC_STARTED_AT="${_ESC_STARTED_AT//\"/\\\"}"; _ESC_STARTED_AT="${_ESC_STARTED_AT//$'\t'/\\t}"; _ESC_STARTED_AT="${_ESC_STARTED_AT//$'\n'/\\n}"; _ESC_STARTED_AT="${_ESC_STARTED_AT//$'\r'/\\r}"; _ESC_STARTED_AT="${_ESC_STARTED_AT//$'\b'/\\b}"; _ESC_STARTED_AT="${_ESC_STARTED_AT//$'\f'/\\f}"
+_ESC_HOST_STATUS="${HOST_STATUS:-}"; _ESC_HOST_STATUS="${_ESC_HOST_STATUS//\\/\\\\}"; _ESC_HOST_STATUS="${_ESC_HOST_STATUS//\"/\\\"}"; _ESC_HOST_STATUS="${_ESC_HOST_STATUS//$'\t'/\\t}"; _ESC_HOST_STATUS="${_ESC_HOST_STATUS//$'\n'/\\n}"; _ESC_HOST_STATUS="${_ESC_HOST_STATUS//$'\r'/\\r}"; _ESC_HOST_STATUS="${_ESC_HOST_STATUS//$'\b'/\\b}"; _ESC_HOST_STATUS="${_ESC_HOST_STATUS//$'\f'/\\f}"
+_ESC_RAW_XML="${RAW_XML:-}"; _ESC_RAW_XML="${_ESC_RAW_XML//\\/\\\\}"; _ESC_RAW_XML="${_ESC_RAW_XML//\"/\\\"}"; _ESC_RAW_XML="${_ESC_RAW_XML//$'\t'/\\t}"; _ESC_RAW_XML="${_ESC_RAW_XML//$'\n'/\\n}"; _ESC_RAW_XML="${_ESC_RAW_XML//$'\r'/\\r}"; _ESC_RAW_XML="${_ESC_RAW_XML//$'\b'/\\b}"; _ESC_RAW_XML="${_ESC_RAW_XML//$'\f'/\\f}"
 
-# Validate with jq if available
+CONSOLIDATED="${OUTPUT_DIR}/consolidated.json"
+# Build JSON through jq to properly escape all values
 if command -v jq &>/dev/null; then
-  if jq '.' "$CONSOLIDATED" > /dev/null 2>&1; then
-    log_info "consolidated.json validated successfully"
-  else
-    log_error "consolidated.json is invalid JSON — writing minimal fallback"
-  fi
+  jq -n \
+    --arg scan_id "$SCAN_ID" \
+    --arg target "$TARGET" \
+    --arg started_at "$STARTED_AT" \
+    --arg host_status "$HOST_STATUS" \
+    --argjson open_ports "${OPEN_PORTS_JSON:-[]}" \
+    --argjson os_detection "${OS_DETECTION:-null}" \
+    --argjson nse_findings "${NSE_FINDINGS_JSON:-[]}" \
+    --argjson fingerprints "${FINGERPRINTS_JSON:-[]}" \
+    --arg raw_xml "${RAW_XML:-}" \
+    --argjson next_vectors "${NEXT_VECTORS_JSON:-[]}" \
+    --argjson port_count "${PORT_COUNT:-0}" \
+    --argjson partial "${PARTIAL:-false}" \
+    '{
+      "scan_id": $scan_id,
+      "target": $target,
+      "started_at": $started_at,
+      "host_status": $host_status,
+      "open_ports": $open_ports,
+      "os_detection": $os_detection,
+      "nse_findings": $nse_findings,
+      "fingerprints": $fingerprints,
+      "raw_xml": $raw_xml,
+      "next_vectors": $next_vectors,
+      "port_count": $port_count,
+      "partial": $partial
+    }' > "$CONSOLIDATED" 2>/dev/null || {
+      log_error "jq failed to build consolidated.json — writing minimal fallback"
+      log_warn "jq failed — writing minimal consolidated.json fallback"
+      # Using printf to avoid shell injection via unquoted heredoc
+      {
+        printf '{\n'
+        printf '  "scan_id": "%s",\n' "$_ESC_SCAN_ID"
+        printf '  "target": "%s",\n' "$_ESC_TARGET"
+        printf '  "started_at": "%s",\n' "$_ESC_STARTED_AT"
+        printf '  "host_status": "%s",\n' "$_ESC_HOST_STATUS"
+        printf '  "open_ports": %s,\n' "${OPEN_PORTS_JSON:-[]}"
+        printf '  "os_detection": %s,\n' "${OS_DETECTION:-null}"
+        printf '  "nse_findings": %s,\n' "${NSE_FINDINGS_JSON:-[]}"
+        printf '  "fingerprints": %s,\n' "${FINGERPRINTS_JSON:-[]}"
+        printf '  "raw_xml": "%s",\n' "$_ESC_RAW_XML"
+        printf '  "next_vectors": %s,\n' "${NEXT_VECTORS_JSON:-[]}"
+        printf '  "port_count": %s,\n' "${PORT_COUNT:-0}"
+        printf '  "partial": %s\n' "${PARTIAL:-false}"
+        printf '}\n'
+      } > "$CONSOLIDATED"
+    }
+  log_info "consolidated.json written with jq escaping"
+else
+  # jq not available — fall back to printf (safe from shell injection)
+  log_warn "jq not available — consolidated.json may have escaping issues"
+  {
+    printf '{\n'
+    printf '  "scan_id": "%s",\n' "$_ESC_SCAN_ID"
+    printf '  "target": "%s",\n' "$_ESC_TARGET"
+    printf '  "started_at": "%s",\n' "$_ESC_STARTED_AT"
+    printf '  "host_status": "%s",\n' "$_ESC_HOST_STATUS"
+    printf '  "open_ports": %s,\n' "${OPEN_PORTS_JSON:-[]}"
+    printf '  "os_detection": %s,\n' "${OS_DETECTION:-null}"
+    printf '  "nse_findings": %s,\n' "${NSE_FINDINGS_JSON:-[]}"
+    printf '  "fingerprints": %s,\n' "${FINGERPRINTS_JSON:-[]}"
+    printf '  "raw_xml": "%s",\n' "$_ESC_RAW_XML"
+    printf '  "next_vectors": %s,\n' "${NEXT_VECTORS_JSON:-[]}"
+    printf '  "port_count": %s,\n' "${PORT_COUNT:-0}"
+    printf '  "partial": %s\n' "${PARTIAL:-false}"
+    printf '}\n'
+  } > "$CONSOLIDATED"
 fi
 
 log_info "Wrote consolidated.json (${PORT_COUNT} ports)"
 
 # ---- Write next_vectors.json --------------------------------------------
 NEXT_FILE="${OUTPUT_DIR}/next_vectors.json"
-cat > "$NEXT_FILE" <<-NEXTEOF
-{
-  "scan_id": "${SCAN_ID}",
-  "target": "${TARGET}",
-  "host_status": "${HOST_STATUS}",
-  "next_vectors": ${NEXT_VECTORS_JSON}
-}
-NEXTEOF
+if command -v jq &>/dev/null; then
+  jq -n \
+    --arg scan_id "$SCAN_ID" \
+    --arg target "$TARGET" \
+    --arg host_status "$HOST_STATUS" \
+    --argjson next_vectors "${NEXT_VECTORS_JSON:-[]}" \
+    '{
+      "scan_id": $scan_id,
+      "target": $target,
+      "host_status": $host_status,
+      "next_vectors": $next_vectors
+    }' > "$NEXT_FILE" 2>/dev/null || {
+      log_warn "jq failed for next_vectors.json — using printf fallback"
+      {
+        printf '{\n'
+        printf '  "scan_id": "%s",\n' "$_ESC_SCAN_ID"
+        printf '  "target": "%s",\n' "$_ESC_TARGET"
+        printf '  "host_status": "%s",\n' "$_ESC_HOST_STATUS"
+        printf '  "next_vectors": %s\n' "${NEXT_VECTORS_JSON:-[]}"
+        printf '}\n'
+      } > "$NEXT_FILE"
+    }
+else
+  {
+    printf '{\n'
+    printf '  "scan_id": "%s",\n' "$_ESC_SCAN_ID"
+    printf '  "target": "%s",\n' "$_ESC_TARGET"
+    printf '  "host_status": "%s",\n' "$_ESC_HOST_STATUS"
+    printf '  "next_vectors": %s\n' "${NEXT_VECTORS_JSON:-[]}"
+    printf '}\n'
+  } > "$NEXT_FILE"
+fi
 
 log_info "Wrote next_vectors.json with ${#NEXT_VECTORS[@]} suggestions"
 exit 0

@@ -1,0 +1,26 @@
+# skills/report-html/skill.yaml
+# Sub-skill: Generate self-contained HTML infographic report from scan results
+---
+name: report-html
+version: "1.0.0"
+description: >
+  Generate a self-contained HTML infographic report from all 4 analyzer
+  consolidated.json sources (nmap-analyzer, nuclei-analyzer, whatweb, testssl).
+main_script: "skills/report-html/main.sh"
+dependencies:
+  - jq
+
+inputs:
+  target:
+    type: string
+    required: true
+    description: "Target hostname or IP address"
+  scan_id:
+    type: string
+    required: true
+    description: "Unique scan identifier"
+
+outputs:
+  report_html:
+    type: string
+    description: "Path to generated report.html file"

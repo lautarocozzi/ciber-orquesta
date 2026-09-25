@@ -2,10 +2,19 @@
 # ============================================================================
 # skills/report-html/sub-processes/generate-report.sh
 #
-# Reads 4 consolidated.json sources (nmap-analyzer, nuclei-analyzer, whatweb,
-# testssl), merges them with jq, computes overall severity, truncates nuclei
-# findings to top-50, and injects the merged data into the report.html
-# template.
+# Reads the analyzer consolidated.json sources (nmap-analyzer, nuclei-analyzer,
+# whatweb, testssl, httpx, nikto, dnsenum-analyzer), merges them with jq,
+# computes overall severity, truncates nuclei findings to top-50, and injects
+# the merged data into the report.html template.
+#
+# The parent report is ROOT-TARGET SCOPED: every per-stage section resolves its
+# own root-anchored state file via resolve_root_source, never the shared dir,
+# so per-subdomain expanded runs (which share WORKFLOW_SHARED_DIR and are
+# last-writer-wins) can never taint the parent.
+#
+# When the DNS source lists subdomains, one child report per subdomain is
+# rendered next to the parent (subdomains/<subdomain>/report.html) and a
+# SUBDOMAINS section with one card per subdomain is added to the parent.
 #
 # This is a sub-process called by main.sh — does NOT source envelope.sh.
 # Communicates results via stdout (outputs the report file path on success).
@@ -31,6 +40,11 @@ WORKFLOW_SHARED_DIR="${WORKFLOW_SHARED_DIR:-}"
 REPORT_TS="${REPORT_TS:-$(date -u +"%Y-%m-%d/%H-%M-%S")}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SKILL_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
+# How many subdomains get a card + a child report. Must stay in sync with
+# expansion.max_targets_per_vector — the engine only expands the first N
+# subdomains, so cards beyond the cap would have nothing behind them.
+SUBDOMAIN_REPORT_CAP="${SUBDOMAIN_REPORT_CAP:-10}"
 
 # ---- Validation -------------------------------------------------------------
 if [ -z "${SCAN_ID}" ] || [ -z "${TARGET}" ]; then
@@ -94,6 +108,70 @@ resolve_source() {
   return 1
 }
 
+# Slugify a target the SAME way engine/workflow.py builds per-target scan ids,
+# so a state path can be reconstructed from a target string.
+# Usage: slugify <target>
+slugify() {
+  local t="$1"
+  t="${t//\.\./-}"   # escaped dots: an unescaped ".." is a glob, not a literal
+  t="${t//./-}"
+  t="${t//:/-}"
+  t="${t//\//-}"
+  printf '%s' "${t}"
+}
+
+# Resolve a ROOT-TARGET source file — the parent report guard.
+#
+# resolve_source prefers WORKFLOW_SHARED_DIR, which every expanded
+# per-subdomain run also writes to (last-writer-wins on
+# <skill>/consolidated.json). A parent section that used it could render one
+# subdomain's data under the root target's heading. This resolver therefore
+# stays inside state/<skill>/ and only accepts non-expanded scan ids.
+#
+# Usage: resolve_root_source <skill_name> <root_step_id>
+#   1. Exact root-anchored scan: state/<skill>/{base}--<step_id>--<root_slug>/
+#   2. Any non-expanded sibling of the same base scan id
+#   3. resolve_source as last resort (keeps standalone/shared-dir runs working)
+resolve_root_source() {
+  local skill_name="$1" step_id="$2"
+  local base="${SCAN_ID%%--*}"
+  local root_slug
+  root_slug="$(slugify "${TARGET}")"
+
+  local exact="${STATE_DIR}/${skill_name}/${base}--${step_id}--${root_slug}/consolidated.json"
+  if [ -f "${exact}" ]; then
+    echo "${exact}"
+    return 0
+  fi
+
+  local match
+  match="$(ls -d "${STATE_DIR}/${skill_name}/${base}--"*/consolidated.json 2>/dev/null \
+    | grep -v -- '--exp-' | head -1 || true)"
+  if [ -n "${match}" ] && [ -f "${match}" ]; then
+    echo "${match}"
+    return 0
+  fi
+
+  resolve_source "${skill_name}" "auto"
+}
+
+# Resolve the consolidated.json of an EXPANDED per-subdomain run of <skill>.
+# The engine expands one step per skill carrying every subdomain, and each
+# target gets its own scan id: {base}--exp-{skill}-{anchor}-{hash}--{sub_slug}.
+# Usage: resolve_expanded_source <skill_name> <subdomain_slug>
+resolve_expanded_source() {
+  local skill_name="$1" sub_slug="$2"
+  local base="${SCAN_ID%%--*}"
+  local match
+  match="$(ls -d "${STATE_DIR}/${skill_name}-analyzer/${base}--exp-${skill_name}-*--${sub_slug}/consolidated.json" 2>/dev/null \
+    | head -1 || true)"
+  if [ -n "${match}" ] && [ -f "${match}" ]; then
+    echo "${match}"
+    return 0
+  fi
+  return 1
+}
+
 # Build a JSON source entry: {<name>: {present: true/false, ...fields_from_file}}
 # Reads the file through jq directly, which validates JSON and merges in present.
 # Usage: build_source_json <source_name> <file_path>
@@ -147,12 +225,15 @@ source_severity() {
 # ---- Resolve source files ---------------------------------------------------
 echo "[generate-report] Resolving sources for scan=${SCAN_ID} target=${TARGET}" >&2
 
-NMAP_FILE="$(resolve_source "nmap-analyzer" || true)"
-NUCLEI_FILE="$(resolve_source "nuclei-analyzer" || true)"
-WHATWEB_FILE="$(resolve_source "whatweb-analyzer" "auto" || true)"
-TESTSSL_FILE="$(resolve_source "testssl-analyzer" "auto" || true)"
-HTTPX_FILE="$(resolve_source "httpx-analyzer" || true)"
-NIKTO_FILE="$(resolve_source "nikto-analyzer" || true)"
+# Every parent source is ROOT-SCOPED: the second argument is the workflow step
+# id whose scan dir holds the root run (they differ per skill — nmap's analyzer
+# step is just "analyzer", httpx's chain starts at "httpx-scan").
+NMAP_FILE="$(resolve_root_source "nmap-analyzer" "analyzer" || true)"
+NUCLEI_FILE="$(resolve_root_source "nuclei-analyzer" "nuclei-analyzer" || true)"
+WHATWEB_FILE="$(resolve_root_source "whatweb-analyzer" "whatweb-analyzer" || true)"
+TESTSSL_FILE="$(resolve_root_source "testssl-analyzer" "testssl-analyzer" || true)"
+HTTPX_FILE="$(resolve_root_source "httpx-analyzer" "httpx-scan" || true)"
+NIKTO_FILE="$(resolve_root_source "nikto-analyzer" "nikto-analyzer" || true)"
 
 echo "[generate-report] Sources:" >&2
 echo "  nmap:    ${NMAP_FILE:-NOT_FOUND}" >&2

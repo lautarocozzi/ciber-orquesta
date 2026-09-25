@@ -1,11 +1,27 @@
 # skills/report-html/skill.yaml
 # Sub-skill: Generate self-contained HTML infographic report from scan results
+#
+# KNOWN v1 LIMITATION — shared dir is last-writer-wins
+#   Every analyzer writes its consolidated.json to $WORKFLOW_SHARED_DIR/<skill>/
+#   consolidated.json, and the engine reuses one shared dir for the whole
+#   workflow. When several expanded per-subdomain runs of the SAME skill
+#   finish, the last one overwrites the file. A consumer that reads the shared
+#   dir therefore sees ONE arbitrary subdomain's data for that skill.
+#   The parent report is immune: every per-stage section resolves its own
+#   ROOT-anchored state file (state/<skill>/{base}--<step-id>--<target>/) via
+#   resolve_root_source() and never falls back to the shared dir for root
+#   data. Child reports are built from the per-subdomain state globs, so they
+#   are immune too. Downstream consumers of the shared dir remain
+#   last-writer-wins until per-target shared paths exist.
 ---
 name: report-html
-version: "1.0.0"
+version: "1.1.0"
 description: >
-  Generate a self-contained HTML infographic report from all 4 analyzer
-  consolidated.json sources (nmap-analyzer, nuclei-analyzer, whatweb, testssl).
+  Generate a self-contained HTML infographic report from the analyzer
+  consolidated.json sources (nmap-analyzer, nuclei-analyzer, whatweb,
+  testssl, httpx, nikto, dnsenum-analyzer). When the DNS source lists
+  subdomains, the parent gains a SUBDOMAINS section and one child report per
+  subdomain.
 main_script: "skills/report-html/main.sh"
 dependencies:
   - jq
@@ -24,3 +40,9 @@ outputs:
   report_html:
     type: string
     description: "Path to generated report.html file"
+  report_html_subdomains:
+    type: string
+    description: >
+      Paths to the per-subdomain child reports
+      (report-html/{ts}/subdomains/<subdomain>/report.html), one per expanded
+      subdomain. Empty when the dns source is absent or found no subdomains.

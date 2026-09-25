@@ -242,6 +242,11 @@ echo "  whatweb: ${WHATWEB_FILE:-NOT_FOUND}" >&2
 echo "  testssl: ${TESTSSL_FILE:-NOT_FOUND}" >&2
 echo "  httpx:   ${HTTPX_FILE:-NOT_FOUND}" >&2
 echo "  nikto:   ${NIKTO_FILE:-NOT_FOUND}" >&2
+# The dnsenum analyzer writes state under its SKILL name (dnsenum-analyzer)
+# even though the workflow step is called dns-analyzer; the state dir is keyed
+# by skill, so the resolver must be given the skill name.
+DNS_FILE="$(resolve_root_source "dnsenum-analyzer" "dns-analyzer" || true)"
+echo "  dns:     ${DNS_FILE:-NOT_FOUND}" >&2
 
 # ---- Process nuclei separately (truncation support) -------------------------
 # Nuclei findings can be very large. We truncate to top-50 sorted by severity
@@ -320,11 +325,12 @@ NMAP_SRC="$(build_source_json "nmap" "${NMAP_FILE}")"
 WHATWEB_SRC="$(build_source_json "whatweb" "${WHATWEB_FILE}")"
 TESTSSL_SRC="$(build_source_json "testssl" "${TESTSSL_FILE}")"
 HTTPX_SRC="$(build_source_json "httpx" "${HTTPX_FILE}")"
+DNS_SRC="$(build_source_json "dns" "${DNS_FILE}")"
 
 # ---- Compute overall severity (highest across all present sources) ----------
 OVERALL_SEVERITY="none"
 
-for src_key in nmap nuclei whatweb testssl httpx nikto; do
+for src_key in nmap nuclei whatweb testssl httpx nikto dns; do
   # Select the correct source variable
   case "${src_key}" in
     nmap)    SRC_OBJ="${NMAP_SRC}"    ;;
@@ -333,6 +339,7 @@ for src_key in nmap nuclei whatweb testssl httpx nikto; do
     testssl) SRC_OBJ="${TESTSSL_SRC}" ;;
     httpx)   SRC_OBJ="${HTTPX_SRC}"   ;;
     nikto)   SRC_OBJ="${NIKTO_SRC}"   ;;
+    dns)     SRC_OBJ="${DNS_SRC}"     ;;
   esac
 
   PRESENT="$(echo "${SRC_OBJ}" | jq -r ".[\"${src_key}\"].present // false" 2>/dev/null || echo "false")"
@@ -356,6 +363,7 @@ WHATWEB_OBJ="$(echo "${WHATWEB_SRC}" | jq -c '.whatweb // {"present":false}' 2>/
 TESTSSL_OBJ="$(echo "${TESTSSL_SRC}" | jq -c '.testssl // {"present":false}' 2>/dev/null || echo '{"present":false}')"
 HTTPX_OBJ="$(echo "${HTTPX_SRC}"   | jq -c '.httpx   // {"present":false}' 2>/dev/null || echo '{"present":false}')"
 NIKTO_OBJ="$(echo "${NIKTO_SRC}"   | jq -c '.nikto   // {"present":false}' 2>/dev/null || echo '{"present":false}')"
+DNS_OBJ="$(echo "${DNS_SRC}"     | jq -c '.dns     // {"present":false}' 2>/dev/null || echo '{"present":false}')"
 
 REPORT_DATA="$(jq -n \
   --arg scan_id "${SCAN_ID}" \
@@ -368,6 +376,7 @@ REPORT_DATA="$(jq -n \
   --argjson testssl "${TESTSSL_OBJ}" \
   --argjson httpx "${HTTPX_OBJ}" \
   --argjson nikto "${NIKTO_OBJ}" \
+  --argjson dns "${DNS_OBJ}" \
   '{
     scan_id: $scan_id,
     target: $target,
@@ -379,7 +388,8 @@ REPORT_DATA="$(jq -n \
       whatweb: $whatweb,
       testssl: $testssl,
       httpx: $httpx,
-      nikto: $nikto
+      nikto: $nikto,
+      dns: $dns
     }
   }'
 )"

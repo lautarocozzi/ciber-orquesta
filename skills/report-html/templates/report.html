@@ -797,7 +797,53 @@ tbody tr:hover {
     </section>
 
     <!-- ================================================================
-         Section 10: Scan Timeline
+         Section 10: DNS Enumeration
+         ================================================================ -->
+    <section id="section-dns" style="display:none">
+      <div class="card">
+        <h2>DNS Enumeration</h2>
+
+        <div id="dns-summary" style="font-size:13px;color:var(--text-secondary);margin-bottom:12px;"></div>
+
+        <div id="dns-axfr-warning" style="display:none;background:rgba(220,53,69,0.1);border:1px solid rgba(220,53,69,0.3);border-radius:6px;padding:10px 16px;font-size:12px;color:var(--danger);margin-bottom:12px;"></div>
+
+        <div class="subsection-title">Name Servers</div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>NS</th>
+              </tr>
+            </thead>
+            <tbody id="dns-ns-tbody"></tbody>
+          </table>
+        </div>
+        <div id="dns-ns-empty" class="no-data" style="display:none">No name servers recorded.</div>
+
+        <div class="subsection-title">Mail Exchange</div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>MX</th>
+              </tr>
+            </thead>
+            <tbody id="dns-mx-tbody"></tbody>
+          </table>
+        </div>
+        <div id="dns-mx-empty" class="no-data" style="display:none">No mail exchangers recorded.</div>
+
+        <div class="subsection-title">Zone Transfer</div>
+        <div id="dns-axfr" style="font-size:13px;"></div>
+
+        <div id="dns-partial" class="partial-banner" style="display:none"></div>
+
+        <div id="dns-empty" class="no-data" style="display:none">No DNS data available.</div>
+      </div>
+    </section>
+
+    <!-- ================================================================
+         Section 11: Scan Timeline
          ================================================================ -->
     <section id="section-timeline">
       <div class="card">
@@ -1434,7 +1480,89 @@ tbody tr:hover {
       }
 
       // ======================================================================
-      // 10. Scan Timeline
+      // 10. DNS Enumeration (dnsenum)
+      // ======================================================================
+      // NS/MX entries are plain strings in the analyzer contract, but accept
+      // object entries too so a future parser shape still renders.
+      function dnsEntryName(entry) {
+        if (entry == null) return '';
+        if (typeof entry === 'string') return entry;
+        return entry.name || entry.host || entry.mx || '';
+      }
+
+      function renderDnsList(list, tbodyId, emptyId) {
+        var tbody = document.getElementById(tbodyId);
+        tbody.innerHTML = '';
+        var names = (list || []).map(dnsEntryName).filter(function(n) { return n !== ''; });
+        if (names.length === 0) {
+          document.getElementById(emptyId).style.display = '';
+          return;
+        }
+        document.getElementById(emptyId).style.display = 'none';
+        names.forEach(function(n) {
+          var tr = document.createElement('tr');
+          tr.innerHTML = '<td data-label="Host">' + escHtml(n) + '</td>';
+          tbody.appendChild(tr);
+        });
+      }
+
+      function renderDns(dns) {
+        if (!dns.present) {
+          hide('section-dns');
+          return;
+        }
+        var ns = dns.ns || [];
+        var mx = dns.mx || [];
+        var zt = dns.zone_transfer || {};
+        var count = dns.subdomain_count != null ? dns.subdomain_count : (dns.subdomains || []).length;
+        if (ns.length === 0 && mx.length === 0 && count === 0 && !zt.success) {
+          hide('section-dns');
+          return;
+        }
+        show('section-dns');
+
+        var parts = [];
+        if (dns.domain) parts.push('Domain: ' + escHtml(dns.domain));
+        parts.push('Subdomains discovered: ' + count);
+        document.getElementById('dns-summary').innerHTML = parts.join(' | ');
+
+        renderDnsList(ns, 'dns-ns-tbody', 'dns-ns-empty');
+        renderDnsList(mx, 'dns-mx-tbody', 'dns-mx-empty');
+
+        // Zone transfer
+        var ztEl = document.getElementById('dns-axfr');
+        if (zt.success) {
+          var recordCount = (zt.records || []).length;
+          ztEl.innerHTML = '<span class="severity-badge" style="background:' + SEVERITY_COLORS.medium + '">Allowed</span> ' +
+            escHtml(recordCount + ' record(s) readable by any host — the whole zone is enumerable.');
+        } else if (zt.attempted === false) {
+          ztEl.innerHTML = '<span class="severity-badge" style="background:' + SEVERITY_COLORS.none + '">Not attempted</span>';
+        } else {
+          ztEl.innerHTML = '<span class="severity-badge" style="background:' + SEVERITY_COLORS.none + '">Refused</span> Zone transfer was attempted and denied.';
+        }
+
+        var warn = document.getElementById('dns-axfr-warning');
+        if (zt.success) {
+          warn.style.display = '';
+          warn.textContent = 'AXFR SUCCEEDED — a full zone dump was readable. ' +
+            ((zt.records || []).length) + ' record(s) captured.';
+        } else {
+          warn.style.display = 'none';
+        }
+
+        if (dns.partial) {
+          var partialEl = document.getElementById('dns-partial');
+          partialEl.style.display = '';
+          partialEl.textContent = 'DNS results may be incomplete (partial scan).';
+        } else {
+          document.getElementById('dns-partial').style.display = 'none';
+        }
+
+        document.getElementById('dns-empty').style.display = 'none';
+      }
+
+      // ======================================================================
+      // 11. Scan Timeline
       // ======================================================================
       function renderTimeline(sources) {
         var timeline = document.getElementById('timeline');
@@ -1446,7 +1574,8 @@ tbody tr:hover {
           { key: 'whatweb', label: 'WhatWeb' },
           { key: 'testssl', label: 'testssl.sh' },
           { key: 'httpx',  label: 'HTTP Probe (httpx)' },
-          { key: 'nikto',  label: 'Nikto Scanner' }
+          { key: 'nikto',  label: 'Nikto Scanner' },
+          { key: 'dns',    label: 'DNS Enumeration (dnsenum)' }
         ];
 
         sourceMeta.forEach(function(meta) {
@@ -1487,6 +1616,7 @@ tbody tr:hover {
       renderHeaders(data.sources && data.sources.whatweb ? data.sources.whatweb : { present: false });
       renderHttpx(data.sources && data.sources.httpx ? data.sources.httpx : { present: false });
       renderNikto(data.sources && data.sources.nikto ? data.sources.nikto : { present: false });
+      renderDns(data.sources && data.sources.dns ? data.sources.dns : { present: false });
       renderTimeline(data.sources || {});
     });
   </script>

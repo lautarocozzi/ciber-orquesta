@@ -58,6 +58,7 @@ scan_profile: aggressive
 
 expansion:
   anchor_steps:
+    - dns-analyzer
     - dns-discovery
     - port-discovery
     - analyzer
@@ -83,6 +84,24 @@ steps:
     timeout: 7200
     metadata:
       description: "DNS subdomain enumeration (dnsenum fast discovery, wildcard-guarded)"
+      phase: reconnaissance
+      expansion_anchor: true
+
+  # ── Level 0a: DNS Analysis ─────────────────────────────────────────────
+  # The engine reads next_vectors.json from the anchor step's skill state
+  # dir, so the analyzer (not the scan) is the anchor that drives expansion.
+  - id: dns-analyzer
+    skill: dnsenum-analyzer
+    sub_process: skills/dnsenum-analyzer/main.sh
+    targets:
+      - "{{ target }}"
+    parameters: {}
+    depends_on:
+      - dns-discovery
+    condition: "prev.success"
+    timeout: 7200
+    metadata:
+      description: "DNS results consolidation and sub-target routing"
       phase: reconnaissance
       expansion_anchor: true
 

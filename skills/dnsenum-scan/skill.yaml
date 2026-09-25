@@ -1,0 +1,65 @@
+# skills/dnsenum-scan/skill.yaml
+# Sub-skill: dnsenum fast DNS discovery — NS/MX, AXFR, brute force + inline parse
+#
+# Tool requirement: dnsenum >= 1.3.1 (default wordlist /usr/share/dnsenum/dns.txt).
+# The dependencies list holds BINARY names only — engine/skill_loader.py validates
+# each entry with shutil.which(), so a version string such as "dnsenum >= 1.3.1"
+# would make the skill unloadable. The version floor is documented in the
+# description instead.
+---
+name: dnsenum-scan
+version: "1.0.0"
+description: >
+  DNS early discovery with dnsenum (requires >= 1.3.1 for automatic AXFR).
+  Probes wildcard DNS, runs fast brute force
+  (--noreverse --threads 20 -t 3, never Google scraping or whois), then parses
+  the XML output, the subfile and the display log into parsed-results.json with
+  subdomains, NS, MX and zone-transfer records. Wildcard-resolving names are
+  dropped before they reach next_vectors.
+main_script: "skills/dnsenum-scan/main.sh"
+dependencies:
+  - dnsenum
+  - dig
+  - jq
+  - python3
+
+inputs:
+  target:
+    type: string
+    required: true
+    description: "Target domain to enumerate (e.g. example.com)"
+  scan_id:
+    type: string
+    required: true
+    description: "Unique scan identifier"
+  wordlist:
+    type: string
+    required: false
+    default: "/usr/share/dnsenum/dns.txt"
+    description: "dnsenum brute-force wordlist (-f)"
+  threads:
+    type: integer
+    required: false
+    default: 20
+    description: "dnsenum concurrent query threads (--threads)"
+  timeout:
+    type: integer
+    required: false
+    default: 3
+    description: "Per-request timeout in seconds (-t)"
+
+outputs:
+  parsed-results.json:
+    type: object
+    description: "Consolidated subdomains[{name,ip,source}], ns[], mx[], zone_transfer, wildcard guard"
+  wildcard.json:
+    type: object
+    description: "Wildcard probe result (probe name, detected flag, wildcard IPs)"
+  subs.txt:
+    type: file
+    description: "dnsenum --subfile output (valid subdomains)"
+  out.xml:
+    type: file
+    description: "dnsenum -o MagicTree XML output"
+
+timeout: 7200

@@ -1,0 +1,534 @@
+# workflows/recon-completo.yaml
+# Full reconnaissance pipeline: sub-skill DAG + automated next-vectors.
+#
+# ┌──────────────────┐
+# │ port-discovery    │  Level 0a: port discovery
+# └───────┬──────────┘
+#         │
+# ┌───────▼──────────┐
+# │service-detection  │  Level 0b: service version detection
+# └───────┬──────────┘
+#         │
+#         ├────────────────────┐
+#         ▼                    ▼
+# ┌───────────────┐  ┌──────────────────┐
+# │ iot-scripts   │  │ analyzer         │  Level 0c: IoT → analyzer (serial)
+# └───────────────┘  └────────┬─────────┘
+#                             │
+#                    ┌────────▼─────────┐
+#                    │ sysreport        │  Level 0d: report generation
+#                    └────────┬─────────┘
+#                             │
+#         ┌───────────────────┼───────────────────┐
+#         ▼                   ▼                   ▼
+# ┌──────────────┐  ┌────────────────┐  ┌────────────────┐
+# │ whatweb      │  │ testssl        │  │ nuclei         │  Level 1: parallel
+# │ fingerprint  │  │ TLS audit      │  │ vuln scan      │
+# └──────────────┘  └────────────────┘  └────────────────┘
+#
+# Usage:
+#   python3 engine/main.py --target <host> --workflow recon-completo
+#   python3 engine/main.py --target geosuite.erictelm2m.com --workflow recon-completo
+#
+# Dynamic expansion:
+#   python3 engine/main.py --target X --workflow recon-completo --expand-next-vectors
+#   Expansion reads next_vectors.json from port-discovery (the anchor step)
+#   and injects additional steps for any suggested skills not already in the
+#   workflow.
+# ---
+name: recon-completo
+description: >
+  Full reconnaissance pipeline — nmap port scan with service detection
+  via independent sub-skills, followed by automated next-vector execution:
+  whatweb (web fingerprinting), testssl (TLS security audit), and nuclei
+  (vulnerability scanning). All post-nmap steps execute in parallel via DAG
+  resolution.
+version: "1.0.0"
+scan_profile: aggressive
+
+# ── Dynamic Expansion ──────────────────────────────────────────────────────
+# When run with --expand-next-vectors, the engine reads next_vectors.json
+# from anchor steps after they complete and injects new WorkflowSteps for
+# any suggested skills that:
+#   1. Have a valid skill.yaml loaded by SkillLoader
+#   2. Are NOT already in the workflow
+#
+# Expansion contract is defined below in the `expansion:` field.
+# See engine/workflow.py WorkflowEngine._expand_from_anchor for details.
+
+expansion:
+  anchor_steps:
+    - dns-discovery
+    - port-discovery
+    - analyzer
+    - whatweb-analyzer
+    - testssl-analyzer
+    - nuclei-analyzer
+    - hardening-judge
+  max_expansions: 10
+  max_targets_per_vector: 10
+  on_conflict: prefer_workflow
+  require_skill: true
+
+steps:
+  # ── Level 0a: DNS Enumeration ───────────────────────────────────────────
+  - id: dns-discovery
+    skill: dnsenum-scan
+    sub_process: skills/dnsenum-scan/main.sh
+    targets:
+      - "{{ target }}"
+    parameters:
+      threads: 10
+    depends_on: []
+    timeout: 7200
+    metadata:
+      description: "DNS subdomain enumeration (dnsenum fast discovery, wildcard-guarded)"
+      phase: reconnaissance
+      expansion_anchor: true
+
+  # ── Level 0a: Port Discovery ────────────────────────────────────────────
+  - id: port-discovery
+    skill: nmap-port-discovery
+    sub_process: skills/nmap-port-discovery/main.sh
+    targets:
+      - "{{ target }}"
+    parameters:
+      ports: top-1000
+      scan_mode: syn
+      timing: 4
+      skip_discovery: false
+    depends_on: []
+    timeout: 600
+    metadata:
+      description: "Nmap port discovery — top-1000 SYN scan"
+      phase: reconnaissance
+      critical: true
+      expansion_anchor: true
+
+  # ── Level 0b: Service Detection ─────────────────────────────────────────
+  - id: service-detection
+    skill: nmap-service-detection
+    sub_process: skills/nmap-service-detection/main.sh
+    targets:
+      - "{{ target }}"
+    parameters:
+      scan_mode: syn
+      timing: 4
+    depends_on:
+      - port-discovery
+    condition: "prev.success"
+    timeout: 600
+    metadata:
+      description: "Nmap service version detection on discovered ports"
+      phase: reconnaissance
+
+  # ── Level 0c: Parallel (optional IoT + analyzer) ────────────────────────
+  - id: iot-scripts
+    skill: nmap-iot-scripts
+    sub_process: skills/nmap-iot-scripts/main.sh
+    targets:
+      - "{{ target }}"
+    parameters:
+      iot_scripts: false
+      scan_mode: syn
+      timing: 4
+    depends_on:
+      - service-detection
+    condition: "prev.success"
+    timeout: 300
+    metadata:
+      description: "IoT protocol NSE scripts (optional — RTSP, MQTT, Modbus, BACnet)"
+      phase: reconnaissance
+
+  - id: analyzer
+    skill: nmap-analyzer
+    sub_process: skills/nmap-analyzer/main.sh
+    targets:
+      - "{{ target }}"
+    parameters: {}
+    depends_on:
+      - service-detection
+      - iot-scripts
+    condition: "prev.success"
+    timeout: 60
+    metadata:
+      description: "Nmap results analysis and consolidation"
+      phase: reconnaissance
+      critical: true
+      expansion_anchor: true
+
+  # ── Level 0d: Sysreport ─────────────────────────────────────────────────
+  - id: sysreport
+    skill: nmap-sysreport
+    sub_process: skills/nmap-sysreport/main.sh
+    targets:
+      - "{{ target }}"
+    parameters: {}
+    depends_on:
+      - analyzer
+    condition: "prev.success"
+    timeout: 30
+    metadata:
+      description: "Nmap sysreport generation (YAML + JSON)"
+      phase: reporting
+
+  # ── Level 1 (parallel after full nmap pipeline) ─────────────────────────
+  # ── DISABLED: old monolithic whatweb + testssl steps (rollback path) ────
+  # - id: whatweb-scan
+  #   skill: whatweb
+  #   sub_process: skills/whatweb/main.sh
+  #   targets:
+  #     - "{{ target }}"
+  #   depends_on:
+  #     - sysreport
+  #   condition: "prev.success"
+  #   timeout: 120
+  #   metadata:
+  #     description: "Web technology fingerprinting with WhatWeb"
+  #     phase: fingerprinting
+  #
+  # - id: testssl-scan
+  #   skill: testssl
+  #   sub_process: skills/testssl/main.sh
+  #   targets:
+  #     - "{{ target }}"
+  #   parameters:
+  #     port: 443
+  #   depends_on:
+  #     - sysreport
+  #   condition: "prev.success"
+  #   timeout: 300
+  #   metadata:
+  #     description: "TLS/SSL security audit with testssl.sh"
+  #     phase: vulnerability-assessment
+
+  # ── whatweb 4-step DAG ────────────────────────────────────────────────────
+  - id: whatweb-scan
+    skill: whatweb-scan
+    sub_process: skills/whatweb-scan/main.sh
+    targets:
+      - "{{ target }}"
+    depends_on:
+      - sysreport
+    condition: "prev.success"
+    continue_on_failure: true
+    timeout: 120
+    metadata:
+      description: "WhatWeb web technology detection — multi-variant scan"
+      phase: fingerprinting
+
+  - id: whatweb-parse
+    skill: whatweb-parse-results
+    sub_process: skills/whatweb-parse-results/main.sh
+    targets:
+      - "{{ target }}"
+    depends_on:
+      - whatweb-scan
+    condition: "prev.success"
+    continue_on_failure: true
+    timeout: 30
+    metadata:
+      description: "WhatWeb results parsing and extraction"
+      phase: fingerprinting
+
+  - id: whatweb-analyzer
+    skill: whatweb-analyzer
+    sub_process: skills/whatweb-analyzer/main.sh
+    targets:
+      - "{{ target }}"
+    depends_on:
+      - whatweb-parse
+    condition: "prev.success"
+    continue_on_failure: true
+    timeout: 30
+    metadata:
+      description: "WhatWeb analysis and next-vector routing"
+      phase: fingerprinting
+      expansion_anchor: true
+
+  - id: whatweb-sysreport
+    skill: whatweb-sysreport
+    sub_process: skills/whatweb-sysreport/main.sh
+    targets:
+      - "{{ target }}"
+    depends_on:
+      - whatweb-analyzer
+    condition: "prev.success"
+    continue_on_failure: true
+    timeout: 30
+    metadata:
+      description: "WhatWeb YAML/JSON report generation"
+      phase: reporting
+
+  # ── testssl 4-step DAG ───────────────────────────────────────────────────
+  - id: testssl-scan
+    skill: testssl-scan
+    sub_process: skills/testssl-scan/main.sh
+    targets:
+      - "{{ target }}"
+    parameters:
+      port: 443
+    depends_on:
+      - sysreport
+    condition: "prev.success"
+    continue_on_failure: true
+    timeout: 300
+    metadata:
+      description: "testssl.sh TLS security audit — multi-variant scan"
+      phase: vulnerability-assessment
+
+  - id: testssl-parse
+    skill: testssl-parse-results
+    sub_process: skills/testssl-parse-results/main.sh
+    targets:
+      - "{{ target }}"
+    parameters:
+      port: 443
+    depends_on:
+      - testssl-scan
+    condition: "prev.success"
+    continue_on_failure: true
+    timeout: 30
+    metadata:
+      description: "testssl results parsing and extraction"
+      phase: vulnerability-assessment
+
+  - id: testssl-analyzer
+    skill: testssl-analyzer
+    sub_process: skills/testssl-analyzer/main.sh
+    targets:
+      - "{{ target }}"
+    depends_on:
+      - testssl-parse
+    condition: "prev.success"
+    continue_on_failure: true
+    timeout: 30
+    metadata:
+      description: "testssl analysis and next-vector routing"
+      phase: vulnerability-assessment
+      expansion_anchor: true
+
+  - id: testssl-sysreport
+    skill: testssl-sysreport
+    sub_process: skills/testssl-sysreport/main.sh
+    targets:
+      - "{{ target }}"
+    depends_on:
+      - testssl-analyzer
+    condition: "prev.success"
+    continue_on_failure: true
+    timeout: 30
+    metadata:
+      description: "testssl YAML/JSON report generation"
+      phase: reporting
+
+  # ── Level 1b: Nuclei 5-step DAG (replaces single nuclei-scan) ─────────────
+  - id: nuclei-template-selection
+    skill: nuclei-template-selection
+    sub_process: skills/nuclei-template-selection/main.sh
+    targets:
+      - "{{ target }}"
+    parameters:
+      severity: info,low,medium,high,critical
+      exclude_tags: ""
+    depends_on: []  # Independent — does not require nmap output
+    timeout: 60
+    metadata:
+      description: "Nuclei template selection and arg resolution"
+      phase: vulnerability-assessment
+
+  - id: nuclei-scan-run
+    skill: nuclei-scan-run
+    sub_process: skills/nuclei-scan-run/main.sh
+    targets:
+      - "{{ target }}"
+    parameters:
+      rate_limit: 50
+      concurrency: 15
+      bulk_size: 10
+      headless: false
+      store_responses: false
+    depends_on:
+      - nuclei-template-selection
+    condition: "prev.success"
+    timeout: 1800
+    metadata:
+      description: "Nuclei vulnerability scan execution"
+      phase: vulnerability-assessment
+
+  - id: nuclei-parse-results
+    skill: nuclei-parse-results
+    sub_process: skills/nuclei-parse-results/main.sh
+    targets:
+      - "{{ target }}"
+    parameters: {}
+    depends_on:
+      - nuclei-scan-run
+    condition: "prev.success"
+    timeout: 60
+    metadata:
+      description: "Nuclei JSONL results parsing"
+      phase: vulnerability-assessment
+
+  - id: nuclei-analyzer
+    skill: nuclei-analyzer
+    sub_process: skills/nuclei-analyzer/main.sh
+    targets:
+      - "{{ target }}"
+    parameters: {}
+    depends_on:
+      - nuclei-parse-results
+    condition: "prev.success"
+    timeout: 60
+    metadata:
+      description: "Nuclei findings analysis and deduplication"
+      phase: vulnerability-assessment
+      expansion_anchor: true
+
+  - id: nuclei-sysreport
+    skill: nuclei-sysreport
+    sub_process: skills/nuclei-sysreport/main.sh
+    targets:
+      - "{{ target }}"
+    parameters: {}
+    depends_on:
+      - nuclei-analyzer
+    condition: "prev.success"
+    timeout: 60
+    metadata:
+      description: "Nuclei report generation (YAML + JSON)"
+      phase: reporting
+
+  # ── httpx 4-step DAG ────────────────────────────────────────────────────
+  - id: httpx-scan
+    skill: httpx
+    sub_process: skills/httpx/main.sh
+    targets:
+      - "{{ target }}"
+    depends_on:
+      - sysreport
+    condition: "prev.success"
+    continue_on_failure: true
+    timeout: 120
+    metadata:
+      description: "httpx HTTP probing and tech detection"
+      phase: fingerprinting
+
+  # ── nikto 5-step DAG (scans parallel, then analyzer) ──────────────────────
+  - id: nikto-scan-standard
+    skill: nikto-scan-standard
+    sub_process: skills/nikto-scan-standard/main.sh
+    targets:
+      - "{{ target }}"
+    depends_on:
+      - sysreport
+    condition: "prev.success"
+    continue_on_failure: true
+    timeout: 120
+    metadata:
+      description: "Nikto standard vulnerability scan"
+      phase: vulnerability-assessment
+
+  - id: nikto-scan-cgi
+    skill: nikto-scan-cgi
+    sub_process: skills/nikto-scan-cgi/main.sh
+    targets:
+      - "{{ target }}"
+    depends_on:
+      - sysreport
+    condition: "prev.success"
+    continue_on_failure: true
+    timeout: 120
+    metadata:
+      description: "Nikto CGI directory discovery"
+      phase: vulnerability-assessment
+
+  - id: nikto-scan-full
+    skill: nikto-scan-full
+    sub_process: skills/nikto-scan-full/main.sh
+    targets:
+      - "{{ target }}"
+    depends_on:
+      - sysreport
+    condition: "prev.success"
+    continue_on_failure: true
+    timeout: 120
+    metadata:
+      description: "Nikto full scan (mutation + evasion)"
+      phase: vulnerability-assessment
+
+  - id: nikto-analyzer
+    skill: nikto-analyzer
+    sub_process: skills/nikto-analyzer/main.sh
+    targets:
+      - "{{ target }}"
+    depends_on:
+      - nikto-scan-standard
+      - nikto-scan-cgi
+      - nikto-scan-full
+    condition: "true"
+    continue_on_failure: true
+    timeout: 60
+    metadata:
+      description: "Nikto findings analysis and consolidation"
+      phase: vulnerability-assessment
+      expansion_anchor: true
+
+  # ── Hardening Judge (Level 2: verdict + next_vectors) ──────────────────────
+  # Reads analysis from all sub-skills and produces a centralized hardening
+  # verdict. Runs as an expansion anchor — its next_vectors trigger a second
+  # expansion wave (verdict-driven, not heuristic).
+  - id: hardening-judge
+    skill: hardening-judge
+    sub_process: skills/hardening-judge/main.sh
+    targets:
+      - "{{ target }}"
+    parameters: {}
+    depends_on:
+      - analyzer
+      - whatweb-analyzer
+      - testssl-analyzer
+      - nuclei-analyzer
+    condition: "prev.success"
+    timeout: 30
+    metadata:
+      description: "Centralized hardening evaluation and verdict"
+      phase: hardening-evaluation
+      expansion_anchor: true
+
+  # ── Report Generation (terminal) ────────────────────────────────────────
+  - id: report-html
+    skill: report-html
+    sub_process: skills/report-html/main.sh
+    targets:
+      - "{{ target }}"
+    parameters: {}
+    depends_on:
+      - sysreport
+      - whatweb-sysreport
+      - testssl-sysreport
+      - nuclei-sysreport
+    condition: "prev.success"
+    continue_on_failure: true
+    timeout: 60
+    metadata:
+      description: "Self-contained HTML infographic report generation"
+      phase: reporting
+
+# Rollback inherits the base nmap policy
+rollback:
+  max_retries: 3
+  relax_on_retry: true
+  on_failure: continue
+  tier1:
+    description: "Direct retry with same parameters"
+    max_attempts: 3
+    backoff_seconds: 1
+  tier2:
+    description: "Relaxed parameters (reduce timing, skip discovery)"
+    triggers_after: tier1_exhausted
+    max_attempts: 2
+  tier3:
+    description: "Record failure, continue pipeline on non-critical steps"
+    triggers_after: tier2_exhausted
+    action: continue

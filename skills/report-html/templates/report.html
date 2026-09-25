@@ -206,6 +206,49 @@ tbody tr:hover {
 }
 
 /* ==========================================================================
+   Subdomain Cards
+   ========================================================================== */
+.subdomain-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 12px;
+}
+.subdomain-card {
+  background: var(--bg-card-alt);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 14px;
+}
+.subdomain-card h3 {
+  margin: 0 0 4px;
+  font-size: 14px;
+  word-break: break-all;
+}
+.subdomain-card h3 a {
+  color: var(--accent);
+  text-decoration: none;
+}
+.subdomain-card h3 a:hover { text-decoration: underline; }
+.subdomain-field {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-top: 4px;
+  word-break: break-all;
+}
+.subdomain-card .tech-cloud { margin-top: 8px; }
+.subdomain-vuln {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-top: 8px;
+}
+.subdomain-muted {
+  font-size: 12px;
+  color: var(--text-muted);
+  font-style: italic;
+  margin-top: 8px;
+}
+
+/* ==========================================================================
    Severity Bar Chart (Nuclei)
    ========================================================================== */
 .severity-chart {
@@ -541,6 +584,10 @@ tbody tr:hover {
     flex: 1 1 100%;
   }
 
+  .subdomain-grid {
+    grid-template-columns: 1fr;
+  }
+
   .cert-field {
     flex-direction: column;
     gap: 2px;
@@ -573,6 +620,7 @@ tbody tr:hover {
         <h1 id="scan-target">—</h1>
         <p class="scan-meta">Scan ID: <span id="scan-id">—</span></p>
         <p class="scan-meta">Generated: <span id="scan-date">—</span></p>
+        <p class="scan-meta" id="parent-report-line" style="display:none">Part of the scan of <span id="parent-target"></span> — <a id="parent-report-link" href="#">back to parent report</a></p>
         <div id="severity-badge"></div>
       </div>
     </section>
@@ -843,7 +891,24 @@ tbody tr:hover {
     </section>
 
     <!-- ================================================================
-         Section 11: Scan Timeline
+         Section 11: Subdomains
+         ================================================================ -->
+    <section id="section-subdomains" style="display:none">
+      <div class="card">
+        <h2>Subdomains</h2>
+
+        <div id="subdomains-count" style="font-size:13px;color:var(--text-secondary);margin-bottom:12px;"></div>
+
+        <div id="subdomains-cards" class="subdomain-grid"></div>
+
+        <div id="subdomains-note" style="display:none;font-size:12px;color:var(--text-secondary);margin-top:10px;"></div>
+
+        <div id="subdomains-empty" class="no-data" style="display:none">No subdomains discovered.</div>
+      </div>
+    </section>
+
+    <!-- ================================================================
+         Section 12: Scan Timeline
          ================================================================ -->
     <section id="section-timeline">
       <div class="card">
@@ -940,6 +1005,18 @@ tbody tr:hover {
         document.getElementById('scan-id').textContent = d.scan_id || 'N/A';
         document.getElementById('scan-date').textContent = fmtDate(d.generated_at);
         document.getElementById('severity-badge').innerHTML = severityBadgeHtml(d.overall_severity);
+
+        // Child reports link back to the parent they were expanded from.
+        if (d.parent_report) {
+          var line = document.getElementById('parent-report-line');
+          line.style.display = '';
+          document.getElementById('parent-target').textContent = d.subdomain && d.subdomain.name
+            ? d.subdomain.name
+            : (d.target || 'this host');
+          document.getElementById('parent-report-link').href = d.parent_report;
+        } else {
+          document.getElementById('parent-report-line').style.display = 'none';
+        }
       }
 
       // ======================================================================
@@ -1562,7 +1639,119 @@ tbody tr:hover {
       }
 
       // ======================================================================
-      // 11. Scan Timeline
+      // 11. Subdomains
+      // ======================================================================
+      function subdomainStatusLabel(s) {
+        if (s.http_status) return 'HTTP ' + s.http_status;
+        if (s.live_web_server === true) return 'Web server live';
+        if (s.live_web_server === false) return 'No live web server';
+        return 'Not probed';
+      }
+
+      function subdomainVulnText(s) {
+        if (!s.has_data) return 'No scan data for this subdomain yet.';
+        if (s.vuln_total > 0) {
+          var counts = s.vuln_severity_counts || {};
+          var parts = [];
+          ['critical', 'high', 'medium', 'low', 'info'].forEach(function(sev) {
+            if (counts[sev] > 0) parts.push(counts[sev] + ' ' + sev);
+          });
+          var summary = s.vuln_total + ' nuclei finding(s)';
+          if (parts.length > 0) summary += ' (' + parts.join(', ') + ')';
+          if (s.top_vulns && s.top_vulns.length > 0) {
+            summary += ' — top: ' + s.top_vulns.map(function(v) {
+              return v.name + ' (' + v.severity + ')';
+            }).join('; ');
+          }
+          return summary;
+        }
+        if (s.nikto_findings > 0) return s.nikto_findings + ' nikto finding(s), no nuclei matches.';
+        if (s.tech && s.tech.length > 0) return 'No findings. ' + s.tech.length + ' technolog(ies) fingerprinted.';
+        return 'No findings.';
+      }
+
+      function renderSubdomains(d) {
+        // No subdomains key at all: the dns source never ran, so the section
+        // has nothing to report. An empty array is a real "none found".
+        if (!d.subdomains) {
+          hide('section-subdomains');
+          return;
+        }
+        var subs = d.subdomains;
+        var total = d.subdomain_total != null ? d.subdomain_total : subs.length;
+
+        show('section-subdomains');
+        document.getElementById('subdomains-count').textContent =
+          'Discovered: ' + total + (subs.length < total ? ' (showing ' + subs.length + ')' : '');
+
+        var grid = document.getElementById('subdomains-cards');
+        grid.innerHTML = '';
+        var emptyEl = document.getElementById('subdomains-empty');
+
+        if (subs.length === 0) {
+          emptyEl.style.display = '';
+          grid.innerHTML = '';
+        } else {
+          emptyEl.style.display = 'none';
+          subs.forEach(function(s) {
+            var card = document.createElement('div');
+            card.className = 'subdomain-card';
+
+            var h3 = document.createElement('h3');
+            var a = document.createElement('a');
+            a.href = s.report || '#';
+            a.textContent = s.name;
+            h3.appendChild(a);
+            card.appendChild(h3);
+
+            var ipEl = document.createElement('div');
+            ipEl.className = 'subdomain-field';
+            ipEl.textContent = s.ip ? 'IP: ' + s.ip : 'IP: unresolved';
+            card.appendChild(ipEl);
+
+            var statusEl = document.createElement('div');
+            statusEl.className = 'subdomain-field';
+            statusEl.textContent = 'Status: ' + subdomainStatusLabel(s);
+            card.appendChild(statusEl);
+
+            if (s.tech && s.tech.length > 0) {
+              var techWrap = document.createElement('div');
+              techWrap.className = 'tech-cloud';
+              s.tech.forEach(function(t) {
+                var b = document.createElement('span');
+                b.className = 'tech-badge';
+                b.textContent = t;
+                techWrap.appendChild(b);
+              });
+              card.appendChild(techWrap);
+            } else {
+              var techNone = document.createElement('div');
+              techNone.className = 'subdomain-muted';
+              techNone.textContent = 'No technologies fingerprinted.';
+              card.appendChild(techNone);
+            }
+
+            var vulnEl = document.createElement('div');
+            vulnEl.className = 'subdomain-vuln';
+            vulnEl.textContent = subdomainVulnText(s);
+            card.appendChild(vulnEl);
+
+            grid.appendChild(card);
+          });
+        }
+
+        var note = document.getElementById('subdomains-note');
+        if (d.subdomains_additional > 0) {
+          note.style.display = '';
+          note.textContent = d.subdomains_additional + ' further subdomain(s) discovered but not reported here — expansion covers the first ' +
+            subs.length + '. Raise expansion.max_targets_per_vector to widen it.';
+        } else {
+          note.style.display = 'none';
+        }
+      }
+
+      // ======================================================================
+      // 12. Scan Timeline
       // ======================================================================
       function renderTimeline(sources) {
         var timeline = document.getElementById('timeline');
@@ -1617,6 +1806,7 @@ tbody tr:hover {
       renderHttpx(data.sources && data.sources.httpx ? data.sources.httpx : { present: false });
       renderNikto(data.sources && data.sources.nikto ? data.sources.nikto : { present: false });
       renderDns(data.sources && data.sources.dns ? data.sources.dns : { present: false });
+      renderSubdomains(data);
       renderTimeline(data.sources || {});
     });
   </script>

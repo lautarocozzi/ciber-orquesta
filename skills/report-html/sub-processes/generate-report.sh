@@ -128,10 +128,17 @@ slugify() {
 # subdomain's data under the root target's heading. This resolver therefore
 # stays inside state/<skill>/ and only accepts non-expanded scan ids.
 #
+# There is NO fallback to the shared dir on purpose. Every analyzer writes its
+# own state dir alongside the shared copy, so a missing root state file means
+# the root run produced nothing — in that case the section must read "Not run"
+# rather than borrow a file whose origin cannot be verified. (The fallback
+# exists in the design as a convenience for standalone runs, but the
+# standalone case is already covered by step 2: a standalone SCAN_ID is just
+# another {prefix}--* dir with no --exp- in its name.)
+#
 # Usage: resolve_root_source <skill_name> <root_step_id>
 #   1. Exact root-anchored scan: state/<skill>/{base}--<step_id>--<root_slug>/
 #   2. Any non-expanded sibling of the same base scan id
-#   3. resolve_source as last resort (keeps standalone/shared-dir runs working)
 resolve_root_source() {
   local skill_name="$1" step_id="$2"
   local base="${SCAN_ID%%--*}"
@@ -152,7 +159,7 @@ resolve_root_source() {
     return 0
   fi
 
-  resolve_source "${skill_name}" "auto"
+  return 1
 }
 
 # Resolve the consolidated.json of an EXPANDED per-subdomain run of <skill>.
@@ -163,7 +170,9 @@ resolve_expanded_source() {
   local skill_name="$1" sub_slug="$2"
   local base="${SCAN_ID%%--*}"
   local match
-  match="$(ls -d "${STATE_DIR}/${skill_name}-analyzer/${base}--exp-${skill_name}-*--${sub_slug}/consolidated.json" 2>/dev/null \
+  # The quotes must close around the "*" or bash treats it as a literal and
+  # ls receives a path that does not exist.
+  match="$(ls -d "${STATE_DIR}/${skill_name}-analyzer/${base}--exp-${skill_name}-"*--"${sub_slug}"/consolidated.json 2>/dev/null \
     | head -1 || true)"
   if [ -n "${match}" ] && [ -f "${match}" ]; then
     echo "${match}"
@@ -188,6 +197,14 @@ build_source_json() {
     jq -n --arg name "${name}" \
       '{($name): {present: false}}'
   fi
+}
+
+# Extract a single source object from a build_source_json envelope.
+# Usage: source_obj <source_name> <file_path>
+source_obj() {
+  build_source_json "$1" "$2" \
+    | jq -c --arg n "$1" '.[$n] // {present: false}' 2>/dev/null \
+    || echo '{"present":false}'
 }
 
 # Numeric severity rank (higher = more severe)
@@ -394,27 +411,21 @@ REPORT_DATA="$(jq -n \
   }'
 )"
 
-# ---- Inject into template ---------------------------------------------------
-TEMPLATE_FILE="${SKILL_DIR}/templates/report.html"
-OUTPUT_DIR="${REPORTS_DIR}/${REPORT_TARGET}/report-html/${REPORT_TS}"
-mkdir -p "${OUTPUT_DIR}"
-OUTPUT_FILE="${OUTPUT_DIR}/report.html"
+# ---- Render one report from the template ------------------------------------
+# Injects a REPORT_DATA object into the template and writes it to out_file.
+# Shared by the parent report and every per-subdomain child report so all of
+# them come from the same template and the same three fallback tiers.
+# Usage: render_report <report_data_file> <out_file> <target> <scan_id>
+render_report() {
+  local data_file="$1" out_file="$2" target="$3" scan_id="$4"
+  local data_single
+  data_single="$(cat "${data_file}")"
 
-if [ ! -f "${TEMPLATE_FILE}" ]; then
-  echo "[generate-report] ERROR: Template not found at ${TEMPLATE_FILE}" >&2
-  exit 2
-fi
+  local injected=false
 
-echo "[generate-report] Injecting merged data into template" >&2
-
-INJECTED=false
-
-# Method 1 (preferred): python3 with temp file — clean, no shell quoting issues
-if command -v python3 &>/dev/null; then
-  REPORT_DATA_FILE="$(mktemp /tmp/report-html-data-XXXXXX.json)"
-  echo "${REPORT_DATA}" > "${REPORT_DATA_FILE}"
-
-  python3 - "${TEMPLATE_FILE}" "${REPORT_DATA_FILE}" "${TARGET}" "${SCAN_ID}" "${OUTPUT_FILE}" << 'PYEOF'
+  # Method 1 (preferred): python3 with temp file — clean, no shell quoting issues
+  if command -v python3 &>/dev/null; then
+    python3 - "${TEMPLATE_FILE}" "${data_file}" "${target}" "${scan_id}" "${out_file}" << 'PYEOF'
 import sys, json
 
 tpl_file = sys.argv[1]
@@ -435,40 +446,219 @@ html = html.replace('{{SCAN_ID}}', scan_id)
 with open(out_file, 'w') as f:
     f.write(html)
 PYEOF
+    injected=true
+    echo "[generate-report] Template injection: python3" >&2
+  fi
 
-  rm -f "${REPORT_DATA_FILE}"
-  INJECTED=true
-  echo "[generate-report] Template injection: python3" >&2
+  # Method 2 (fallback): jq -c to produce single-line JSON + sed with safe delimiter
+  if ! ${injected} && command -v jq &>/dev/null; then
+    data_single="$(echo "${data_single}" | jq -c . 2>/dev/null || echo "${data_single}")"
+    # Escape / & " and newlines for sed
+    local data_safe
+    data_safe="$(echo "${data_single}" | sed 's/[\/&]/\\&/g; s/"/\\"/g')"
+    sed "s/{{REPORT_DATA}}/${data_safe}/g; s/{{TARGET}}/${target}/g; s/{{SCAN_ID}}/${scan_id}/g" \
+      "${TEMPLATE_FILE}" > "${out_file}" && injected=true
+    echo "[generate-report] Template injection: jq+sed" >&2
+  fi
+
+  # Method 3 (last resort): basic sed with flattened JSON
+  if ! ${injected}; then
+    local data_flat
+    data_flat="$(echo "${data_single}" | tr -d '\n' | sed 's/[\/&]/\\&/g; s/"/\\"/g')"
+    sed "s/{{REPORT_DATA}}/${data_flat}/g; s/{{TARGET}}/${target}/g; s/{{SCAN_ID}}/${scan_id}/g" \
+      "${TEMPLATE_FILE}" > "${out_file}" && injected=true
+    echo "[generate-report] Template injection: sed (fallback)" >&2
+  fi
+
+  if ! ${injected}; then
+    echo "[generate-report] ERROR: Failed to inject data into template (no suitable method)" >&2
+    return 1
+  fi
+
+  if [ ! -f "${out_file}" ]; then
+    echo "[generate-report] ERROR: Output file was not created at ${out_file}" >&2
+    return 1
+  fi
+  return 0
+}
+
+# ---- Output paths -----------------------------------------------------------
+TEMPLATE_FILE="${SKILL_DIR}/templates/report.html"
+OUTPUT_DIR="${REPORTS_DIR}/${REPORT_TARGET}/report-html/${REPORT_TS}"
+mkdir -p "${OUTPUT_DIR}"
+OUTPUT_FILE="${OUTPUT_DIR}/report.html"
+
+if [ ! -f "${TEMPLATE_FILE}" ]; then
+  echo "[generate-report] ERROR: Template not found at ${TEMPLATE_FILE}" >&2
+  exit 2
 fi
 
-# Method 2 (fallback): jq -c to produce single-line JSON + sed with safe delimiter
-if ! ${INJECTED} && command -v jq &>/dev/null; then
-  REPORT_DATA_SINGLE="$(echo "${REPORT_DATA}" | jq -c . 2>/dev/null || echo "${REPORT_DATA}")"
-  # Escape / & " and newlines for sed
-  REPORT_DATA_SAFE="$(echo "${REPORT_DATA_SINGLE}" | sed 's/[\/&]/\\&/g; s/"/\\"/g')"
-  sed "s/{{REPORT_DATA}}/${REPORT_DATA_SAFE}/g; s/{{TARGET}}/${TARGET}/g; s/{{SCAN_ID}}/${SCAN_ID}/g" \
-    "${TEMPLATE_FILE}" > "${OUTPUT_FILE}" && INJECTED=true
-  echo "[generate-report] Template injection: jq+sed" >&2
+# ---- Per-subdomain child reports + parent cards -----------------------------
+# The dns source is the index of discovered subdomains. For each of them (up to
+# the expansion cap) a child report aggregates ONLY that subdomain's expanded
+# analyzer state, and a card is collected for the parent's SUBDOMAINS section.
+SUBDOMAINS_JSON='[]'
+DNS_PRESENT="$(echo "${DNS_OBJ}" | jq -r '.present // false' 2>/dev/null || echo false)"
+DNS_SUBDOMAIN_TOTAL=0
+SUBDOMAIN_ADDITIONAL=0
+CHILD_REPORT_COUNT=0
+
+if [ "${DNS_PRESENT}" = "true" ]; then
+  DNS_SUBDOMAIN_TOTAL="$(echo "${DNS_OBJ}" | jq -r '.subdomain_count // ((.subdomains // []) | length)' 2>/dev/null || echo 0)"
+
+  while IFS=$'\t' read -r sub_name sub_ip sub_source; do
+    [ -z "${sub_name}" ] && continue
+
+    # A subdomain name becomes a directory name. DNS labels cannot contain
+    # slashes or dots-only sequences, but a hand-edited state file can, so
+    # reject anything that could escape the report folder.
+    if ! [[ "${sub_name}" =~ ^[A-Za-z0-9]([A-Za-z0-9._-]*[A-Za-z0-9])?$ ]]; then
+      echo "[generate-report] WARN: skipping subdomain with unsafe name: ${sub_name}" >&2
+      continue
+    fi
+
+    sub_slug="$(slugify "${sub_name}")"
+    c_httpx_obj="$(source_obj "httpx" "$(resolve_expanded_source "httpx" "${sub_slug}" || true)")"
+    c_nuclei_obj="$(source_obj "nuclei" "$(resolve_expanded_source "nuclei" "${sub_slug}" || true)")"
+    c_whatweb_obj="$(source_obj "whatweb" "$(resolve_expanded_source "whatweb" "${sub_slug}" || true)")"
+    c_nikto_obj="$(source_obj "nikto" "$(resolve_expanded_source "nikto" "${sub_slug}" || true)")"
+
+    # Child severity: worst of the child's own sources only.
+    c_overall="none"
+    for c_key in nuclei whatweb httpx nikto; do
+      case "${c_key}" in
+        nuclei)  c_obj="${c_nuclei_obj}"  ;;
+        whatweb) c_obj="${c_whatweb_obj}" ;;
+        httpx)   c_obj="${c_httpx_obj}"   ;;
+        nikto)   c_obj="${c_nikto_obj}"   ;;
+      esac
+      c_present="$(echo "${c_obj}" | jq -r '.present // false' 2>/dev/null || echo false)"
+      [ "${c_present}" != "true" ] && continue
+      c_sev="$(echo "${c_obj}" | jq -c . 2>/dev/null | source_severity || echo none)"
+      if [ "$(sev_rank "${c_sev}")" -gt "$(sev_rank "${c_overall}")" ]; then
+        c_overall="${c_sev}"
+      fi
+    done
+
+    # A child report is a full report scoped to one host: sources it never ran
+    # (nmap, testssl, dns) stay absent and render as "Not run".
+    child_file="$(mktemp /tmp/report-html-child-XXXXXX.json)"
+    jq -n \
+      --arg scan_id "${SCAN_ID}" \
+      --arg target "${sub_name}" \
+      --arg generated_at "${GENERATED_AT}" \
+      --arg overall_severity "${c_overall}" \
+      --arg name "${sub_name}" \
+      --arg ip "${sub_ip}" \
+      --arg source "${sub_source}" \
+      --argjson nuclei "${c_nuclei_obj}" \
+      --argjson whatweb "${c_whatweb_obj}" \
+      --argjson httpx "${c_httpx_obj}" \
+      --argjson nikto "${c_nikto_obj}" \
+      '{
+        scan_id: $scan_id,
+        target: $target,
+        generated_at: $generated_at,
+        overall_severity: $overall_severity,
+        parent_report: "../../report.html",
+        subdomain: {name: $name, ip: $ip, source: $source},
+        sources: {
+          nmap: {present: false},
+          nuclei: $nuclei,
+          whatweb: $whatweb,
+          testssl: {present: false},
+          httpx: $httpx,
+          nikto: $nikto,
+          dns: {present: false}
+        }
+      }' > "${child_file}"
+
+    sub_dir="${OUTPUT_DIR}/subdomains/${sub_name}"
+    mkdir -p "${sub_dir}"
+    if render_report "${child_file}" "${sub_dir}/report.html" "${sub_name}" "${SCAN_ID}"; then
+      CHILD_REPORT_COUNT=$(( CHILD_REPORT_COUNT + 1 ))
+    else
+      echo "[generate-report] WARN: child report failed for ${sub_name}" >&2
+    fi
+    rm -f "${child_file}"
+
+    # Card fields for the parent: identity from DNS, findings from the child.
+    card="$(jq -n \
+      --arg name "${sub_name}" \
+      --arg ip "${sub_ip}" \
+      --arg source "${sub_source}" \
+      --arg report "subdomains/${sub_name}/report.html" \
+      --argjson nuclei "${c_nuclei_obj}" \
+      --argjson whatweb "${c_whatweb_obj}" \
+      --argjson httpx "${c_httpx_obj}" \
+      --argjson nikto "${c_nikto_obj}" \
+      '{
+        name: $name,
+        ip: $ip,
+        source: $source,
+        report: $report,
+        http_status: (if $httpx.present
+                       then ((($httpx.endpoints // [])[0].status_code // 0) as $s | if $s > 0 then $s else null end)
+                       else null end),
+        live_web_server: (if $httpx.present then ($httpx.live_web_server // null) else null end),
+        # httpx reports bare names ("Nginx"), whatweb reports name + version
+        # ("Nginx 1.24.0"). Group by name so a card shows one chip per
+        # technology, keeping whichever version we have.
+        tech: (([($httpx.tech_stack // [])[] | {name: ., version: ""}]
+                + [(($whatweb.technologies // [])[]
+                    | if type == "object"
+                      then {name: (.name // ""), version: (.version // "")}
+                      else {name: ., version: ""} end)])
+               | map(select(.name != null and .name != ""))
+               | group_by(.name | ascii_downcase)
+               | map(([.[] | select(.version != "") | .version][0] // "") as $v
+                     | if $v == "" then .[0].name else (.[0].name + " " + $v) end)
+               | unique),
+        vuln_total: (if $nuclei.present
+                       then (($nuclei.total_matched // (($nuclei.findings // []) | length)) // 0)
+                       else 0 end),
+        vuln_severity_counts: (if $nuclei.present then ($nuclei.severity_counts // {}) else {} end),
+        top_vulns: (if $nuclei.present
+                      then ([($nuclei.findings // [])[]
+                             | {severity: (.severity // "info"),
+                                name: (.name // .template_id // "unknown"),
+                                template_id: (.template_id // "")}][0:3])
+                      else [] end),
+        nikto_findings: (if $nikto.present then ((($nikto.findings // []) | length) // 0) else 0 end),
+        has_data: ($httpx.present or $whatweb.present or $nuclei.present or $nikto.present)
+      }')"
+    SUBDOMAINS_JSON="$(echo "${SUBDOMAINS_JSON}" | jq -c --argjson card "${card}" '. + [$card]')"
+  done < <(echo "${DNS_OBJ}" \
+    | jq -r --argjson cap "${SUBDOMAIN_REPORT_CAP}" \
+        '((.subdomains // []) | .[0:$cap][] | [(.name // ""), (.ip // ""), (.source // "")] | @tsv)' \
+    2>/dev/null || true)
+
+  SUBDOMAIN_ADDITIONAL=$(( DNS_SUBDOMAIN_TOTAL - CHILD_REPORT_COUNT ))
+  [ "${SUBDOMAIN_ADDITIONAL}" -lt 0 ] && SUBDOMAIN_ADDITIONAL=0
+  echo "[generate-report] Subdomains: ${CHILD_REPORT_COUNT} child report(s) for ${DNS_SUBDOMAIN_TOTAL} discovered, cap ${SUBDOMAIN_REPORT_CAP}, ${SUBDOMAIN_ADDITIONAL} not reported" >&2
 fi
 
-# Method 3 (last resort): basic sed with flattened JSON
-if ! ${INJECTED}; then
-  REPORT_DATA_FLAT="$(echo "${REPORT_DATA}" | tr -d '\n' | sed 's/[\/&]/\\&/g; s/"/\\"/g')"
-  sed "s/{{REPORT_DATA}}/${REPORT_DATA_FLAT}/g; s/{{TARGET}}/${TARGET}/g; s/{{SCAN_ID}}/${SCAN_ID}/g" \
-    "${TEMPLATE_FILE}" > "${OUTPUT_FILE}" && INJECTED=true
-  echo "[generate-report] Template injection: sed (fallback)" >&2
+# The SUBDOMAINS section renders only when the dns source ran: an empty
+# subdomain list is a real "none found" state, while a missing dns source
+# means the section has nothing to say at all.
+if [ "${DNS_PRESENT}" = "true" ]; then
+  REPORT_DATA="$(echo "${REPORT_DATA}" | jq -c \
+    --argjson subdomains "${SUBDOMAINS_JSON}" \
+    --argjson total "${DNS_SUBDOMAIN_TOTAL}" \
+    --argjson additional "${SUBDOMAIN_ADDITIONAL}" \
+    '. + {
+      subdomains: $subdomains,
+      subdomain_total: $total,
+      subdomains_additional: $additional
+    }')"
 fi
 
-if ! ${INJECTED}; then
-  echo "[generate-report] ERROR: Failed to inject data into template (no suitable method)" >&2
-  exit 1
-fi
+echo "[generate-report] Injecting merged data into template" >&2
 
-# Verify output was written
-if [ ! -f "${OUTPUT_FILE}" ]; then
-  echo "[generate-report] ERROR: Output file was not created at ${OUTPUT_FILE}" >&2
-  exit 1
-fi
+PARENT_DATA_FILE="$(mktemp /tmp/report-html-data-XXXXXX.json)"
+echo "${REPORT_DATA}" > "${PARENT_DATA_FILE}"
+render_report "${PARENT_DATA_FILE}" "${OUTPUT_FILE}" "${TARGET}" "${SCAN_ID}" || exit 1
+rm -f "${PARENT_DATA_FILE}"
 
 echo "[generate-report] Report written: ${OUTPUT_FILE}" >&2
 

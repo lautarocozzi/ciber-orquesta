@@ -1,0 +1,54 @@
+name: Feature Request
+description: Request a new capability or improvement for the orchestrator platform
+title: "feat(scope): description"
+labels: ["enhancement", "status:needs-review"]
+body:
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Pre-flight Checks
+      options:
+        - label: I have searched existing issues and this is not a duplicate
+          required: true
+        - label: I understand this issue needs status:approved before a PR can be opened
+          required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem Description
+      description: The pain point this feature solves for the security orchestration platform.
+    validations:
+      required: true
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed Solution
+      description: How it should work from the orchestrator/user perspective.
+      placeholder: |
+        Example:
+        - Add a dnsenum skill as an early-discovery phase in recon-completo
+        - Emit discovered subdomains as new targets via next_vectors
+        - Render a SUBDOMAINS section in the final report
+    validations:
+      required: true
+  - type: dropdown
+    id: affected
+    attributes:
+      label: Affected Area
+      options:
+        - Engine (orchestration, workflow, CLI)
+        - Skills (scans, analyzers, reporters)
+        - Workflows (YAML DAGs)
+        - Reports (HTML generation)
+        - Documentation
+        - CI/Workflows (GitHub Actions)
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives Considered
+      description: Other approaches or workarounds (or "None").
+    validations:
+      required: false

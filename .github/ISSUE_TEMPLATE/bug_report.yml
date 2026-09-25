@@ -1,0 +1,64 @@
+name: Bug Report
+description: Report a defect in the orchestrator platform
+title: "fix(scope): description"
+labels: ["bug", "status:needs-review"]
+body:
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Pre-flight Checks
+      options:
+        - label: I have searched existing issues and this is not a duplicate
+          required: true
+        - label: I understand this issue needs status:approved before a PR can be opened
+          required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: Bug Description
+      description: Clear description of the defect.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to Reproduce
+      description: Numbered steps.
+      placeholder: |
+        1. Run the engine with --workflow recon-completo
+        2. Observe ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected Behavior
+      description: What should have happened.
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual Behavior
+      description: What happened instead (include errors/logs).
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating System
+      options:
+        - Kali Linux Rolling
+        - Debian/Ubuntu
+        - macOS
+        - Other Linux
+        - Windows/WSL
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant Logs
+      description: Log output (optional).
+    validations:
+      required: false

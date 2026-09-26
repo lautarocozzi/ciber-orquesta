@@ -32,7 +32,7 @@ from engine.event_bus import write_event, EventWatcher
 from engine.main_manager import MainManager
 from engine.skill_loader import SkillLoader, SkillValidationError, SkillDependencyError
 from engine.state import read_state, write_state
-from engine.workflow import WorkflowEngine, load_workflow
+from engine.workflow import WorkflowEngine, load_workflow, preview_expansion
 
 logger = logging.getLogger("engine.main")
 
@@ -214,6 +214,24 @@ async def run_scan(
         for step in workflow.steps:
             deps = f" (after: {', '.join(step.depends_on)})" if step.depends_on else ""
             print(f"    {step.id}: {step.skill}/{step.sub_process} -> {step.targets}{deps}")
+
+        # Expansion normally happens mid-execution, so a dry run would stop
+        # one level short of the plan. Replay it from anchor state on disk:
+        # read-only, no subprocess spawned. Cold dry runs legitimately
+        # preview nothing — they cannot invent subdomains.
+        if expand_next_vectors:
+            print("  Expanded steps (would run after execution):")
+            expanded = preview_expansion(workflow, skill_loader)
+            if not expanded:
+                print(
+                    "    (no anchor state yet — run the workflow once, then "
+                    "re-run --dry-run to preview expansion)"
+                )
+            for step in expanded:
+                print(
+                    f"    {step.id}: {step.skill}/{step.sub_process} -> "
+                    f"{step.targets} (after: {', '.join(step.depends_on)})"
+                )
         return 0
 
     # Execute

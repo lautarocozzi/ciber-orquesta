@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import time
+from collections import OrderedDict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -127,25 +128,33 @@ async def _try_inotify_watch(
     """
     try:
         import watchfiles
-
-        if not path.parent.exists():
-            path.parent.mkdir(parents=True, exist_ok=True)
-
-        async for changes in watchfiles.awatch(
-            str(path.parent),
-            stop_event=None,
-        ):
-            for change_type, changed_path in changes:
-                if str(changed_path) == str(path):
-                    return True
-            if timeout:
-                # watchfiles uses its own timing; we return after first batch
-                return True
     except ImportError:
         logger.debug("watchfiles not available; using polling fallback")
+        return False
+
+    if not path.parent.exists():
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+    async def _wait_for_change() -> bool:
+        async for changes in watchfiles.awatch(
+            str(path.parent), stop_event=None,
+        ):
+            for _change_type, changed_path in changes:
+                if str(changed_path) == str(path):
+                    return True
+        return False
+
+    try:
+        result = await asyncio.wait_for(
+            _wait_for_change(), timeout=timeout or 30,
+        )
+        return result
+    except asyncio.TimeoutError:
+        logger.debug("inotify watch timed out; using polling fallback")
+        return False
     except Exception as exc:
         logger.debug("inotify watch failed (%s); using polling fallback", exc)
-    return False
+        return False
 
 
 def cleanup_old_events(ttl_hours: int = _DEFAULT_TTL_HOURS) -> int:
@@ -207,9 +216,13 @@ class EventWatcher:
 
     async def _watch_loop(self) -> None:
         """Main loop: scan ``state/`` for new/changed status.json files."""
-        known_states: dict[str, str] = {}
+        known_states: OrderedDict[str, str] = OrderedDict()
+        _MAX_KNOWN = 1000
         while self._running:
             await self._scan_state_dir(known_states)
+            # Evict oldest entries when over max size
+            while len(known_states) > _MAX_KNOWN:
+                known_states.popitem(last=False)
             await asyncio.sleep(self.poll_interval)
 
     async def _scan_state_dir(

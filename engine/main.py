@@ -24,6 +24,7 @@ import asyncio
 import json
 import logging
 import sys
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -31,7 +32,7 @@ from engine.event_bus import write_event, EventWatcher
 from engine.main_manager import MainManager
 from engine.skill_loader import SkillLoader, SkillValidationError, SkillDependencyError
 from engine.state import read_state, write_state
-from engine.workflow import WorkflowEngine, load_workflow
+from engine.workflow import WorkflowEngine, load_workflow, preview_expansion
 
 logger = logging.getLogger("engine.main")
 
@@ -83,6 +84,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--dry-run",
         action="store_true",
         help="Load and validate everything but do not execute",
+    )
+    parser.add_argument(
+        "--expand-next-vectors",
+        action="store_true",
+        help="Auto-expand next_vector suggestions from anchor steps into new workflow steps",
     )
     return parser
 
@@ -150,16 +156,27 @@ async def run_scan(
     manager: MainManager,
     verbose: bool = False,
     dry_run: bool = False,
+    expand_next_vectors: bool = False,
 ) -> int:
     """Execute a scan against *target* using *workflow_name*.
 
     Returns:
         Exit code (0 = success, 1 = degraded, 2 = failure).
     """
+    # Validate target early — fail before any subprocess runs
+    try:
+        _sanitize_target(target)
+    except ValueError as exc:
+        logger.error("Target validation failed: %s", exc)
+        return 2
+
     # Load the workflow
     try:
         workflow = load_workflow(workflow_name)
     except FileNotFoundError as exc:
+        logger.error("Workflow load failed: %s", exc)
+        return 2
+    except ValueError as exc:
         logger.error("Workflow load failed: %s", exc)
         return 2
 
@@ -182,7 +199,7 @@ async def run_scan(
         target=target,
         parameters={"workflow": workflow.name, "profile": workflow.scan_profile},
     )
-    write_state(
+    await write_state(
         scan_id=scan_id,
         data={"target": target, "workflow": workflow.name, "status": "running"},
         skill="engine",
@@ -197,6 +214,24 @@ async def run_scan(
         for step in workflow.steps:
             deps = f" (after: {', '.join(step.depends_on)})" if step.depends_on else ""
             print(f"    {step.id}: {step.skill}/{step.sub_process} -> {step.targets}{deps}")
+
+        # Expansion normally happens mid-execution, so a dry run would stop
+        # one level short of the plan. Replay it from anchor state on disk:
+        # read-only, no subprocess spawned. Cold dry runs legitimately
+        # preview nothing — they cannot invent subdomains.
+        if expand_next_vectors:
+            print("  Expanded steps (would run after execution):")
+            expanded = preview_expansion(workflow, skill_loader)
+            if not expanded:
+                print(
+                    "    (no anchor state yet — run the workflow once, then "
+                    "re-run --dry-run to preview expansion)"
+                )
+            for step in expanded:
+                print(
+                    f"    {step.id}: {step.skill}/{step.sub_process} -> "
+                    f"{step.targets} (after: {', '.join(step.depends_on)})"
+                )
         return 0
 
     # Execute
@@ -216,7 +251,10 @@ async def run_scan(
         await watcher.start()
 
     try:
-        results = await engine.execute(workflow)
+        results = await engine.execute(
+            workflow,
+            expand_next_vectors=expand_next_vectors,
+        )
     finally:
         if verbose:
             await watcher.stop()
@@ -246,7 +284,7 @@ async def run_scan(
     if failed:
         overall = "degraded" if len(failed) < len(results) else "failed"
 
-    write_state(
+    await write_state(
         scan_id=scan_id,
         data={
             "target": target,
@@ -264,7 +302,87 @@ async def run_scan(
         skill="engine",
     )
 
+    # Write workflow-summary.json for AI agent consumption
+    try:
+        summary_path = _write_workflow_summary(
+            target=target,
+            scan_id=scan_id,
+            workflow_name=workflow.name,
+            overall=overall,
+            results=results,
+        )
+        logger.info("Workflow summary written to %s", summary_path)
+    except Exception as exc:
+        logger.warning("Failed to write workflow summary: %s", exc)
+
     return 0 if overall == "done" else (1 if overall == "degraded" else 2)
+
+
+def _sanitize_target(target: str) -> str:
+    """Strip protocol prefixes for filesystem-safe paths.
+
+    Raises ValueError if target contains path traversal sequences.
+    """
+    sanitized = target
+    for prefix in ("https://", "http://", "tcp://", "udp://", "file://"):
+        if sanitized.startswith(prefix):
+            sanitized = sanitized[len(prefix):]
+            break
+    sanitized = sanitized.rstrip("/")
+    # Block path traversal — reject any .. component or absolute paths
+    if ".." in sanitized.split("/") or sanitized.startswith("/") or sanitized.startswith("~"):
+        raise ValueError(f"Target contains path traversal: {target!r}")
+    return sanitized
+
+
+def _write_workflow_summary(
+    target: str,
+    scan_id: str,
+    workflow_name: str,
+    overall: str,
+    results: dict,
+) -> str:
+    """Write a structured JSON summary for AI agent consumption.
+
+    Returns the path to the written file.
+    """
+    reports_dir = Path(os.environ.get("REPORTS_DIR", "reports"))
+    target_slug = _sanitize_target(target)
+    summary_dir = reports_dir / target_slug
+    summary_dir.mkdir(parents=True, exist_ok=True)
+
+    steps = {}
+    for step_id, result in results.items():
+        step_target = getattr(result, 'target', target)
+        step_target_slug = _sanitize_target(step_target)
+        step_info = {
+            "status": result.status.value,
+            "return_code": result.return_code,
+            "skill": result.skill,
+            "sub_process": result.sub_process,
+            "duration_ms": result.duration_ms,
+            "error": (result.error_context.get("error") if result.error_context else None),
+        }
+        if result.status.value == "done":
+            step_info["sysreport_dir"] = str(reports_dir / step_target_slug / result.skill)
+        steps[step_id] = step_info
+
+    summary = {
+        "scan_id": scan_id,
+        "workflow": workflow_name,
+        "target": target,
+        "target_slug": target_slug,
+        "status": overall,
+        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "steps": steps,
+        "reports_dir": str(reports_dir / target_slug),
+    }
+
+    summary_path = summary_dir / "workflow-summary.json"
+    with open(summary_path, "w") as f:
+        json.dump(summary, f, indent=2)
+
+    return str(summary_path)
 
 
 async def amain() -> int:
@@ -309,6 +427,7 @@ async def amain() -> int:
         manager=manager,
         verbose=args.verbose,
         dry_run=args.dry_run,
+        expand_next_vectors=args.expand_next_vectors,
     )
 
 

@@ -1,0 +1,84 @@
+# skills/dnsenum/skill.yaml
+# dnsenum skill — DNS subdomain enumeration.
+# Runs dnsenum in fast discovery mode, parses the results inline, analyzes
+# them and generates next_vectors for downstream skills.
+# Runs as a multi-stage sub-process pipeline:
+# scan (run + inline parse) → analyzer → sysreport.
+---
+name: dnsenum
+version: "1.0.0"
+description: >
+  DNS subdomain enumeration using dnsenum in fast discovery mode. Probes
+  wildcard DNS first so wildcard names never reach downstream skills, keeps
+  zone transfer enabled, then analyzes the discovered subdomains, nameservers,
+  mail exchanges and zone transfer result, computes severity, and generates
+  next_vectors carrying the discovered subdomains as targets.
+
+main_script: "skills/dnsenum/main.sh"
+
+dependencies:
+  - dnsenum
+  - dig
+  - jq
+  - python3
+
+inputs:
+  target:
+    type: string
+    required: true
+    description: "Target domain to enumerate"
+  wordlist:
+    type: string
+    required: false
+    description: "Override the dnsenum dictionary (default: dnsenum's bundled dns.txt)"
+  threads:
+    type: integer
+    required: false
+    default: 10
+    description: "dnsenum thread count"
+  step_timeout:
+    type: integer
+    required: false
+    default: 7200
+    description: "Per-step timeout in seconds"
+
+outputs:
+  subdomains:
+    type: list
+    description: "Discovered subdomains with IP address and discovery source"
+  nameservers:
+    type: list
+    description: "Authoritative nameservers"
+  mail_exchange:
+    type: list
+    description: "Mail exchange servers"
+  zone_transfer:
+    type: object
+    description: "Zone transfer attempt result (attempted, success, records)"
+  severity:
+    type: string
+    description: "Overall assessment severity: info | low | medium"
+  next_vectors:
+    type: list
+    description: "Suggested follow-up skills targeting the discovered subdomains"
+
+sub_processes:
+  - scan
+  - analyzer
+  - sysreport
+
+next_vectors:
+  - condition: "subdomains discovered"
+    skill: httpx
+    weight: 90
+    reason: "Subdomains discovered — probe live HTTP on each one"
+
+  - condition: "subdomains discovered"
+    skill: nuclei
+    weight: 80
+    reason: "Subdomains discovered — vulnerability scanning on the new attack surface"
+
+  - condition: "subdomains discovered"
+    skill: whatweb
+    weight: 70
+    reason: "Subdomains discovered — fingerprint the technology stack"

@@ -6,6 +6,7 @@ using topological sort, and dispatches each step through the MainManager.
 """
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -21,6 +22,31 @@ from engine.state import read_state, write_state
 logger = logging.getLogger(__name__)
 
 _WORKFLOWS_DIR = Path(os.environ.get("WORKFLOWS_DIR", "workflows"))
+
+
+def _targets_key(targets: list[str]) -> str:
+    """Deterministic hash key for a target set (first 8 hex chars of SHA-1).
+
+    Sorts case-insensitively so identical target sets in any order produce
+    the same key — dedup and collision-free step ids rely on this.
+    """
+    joined = "|".join(sorted(targets, key=lambda t: (t.lower(), t)))
+    return hashlib.sha1(joined.encode("utf-8")).hexdigest()[:8]
+
+
+def _target_slug(target: str) -> str:
+    """Filesystem-safe slug for the ``{base}--{step}--{slug}`` scan id.
+
+    Single source of truth for that convention: state lookup, step
+    execution and the dry-run preview MUST agree on it, or the preview
+    resolves a different path than the runtime does.
+    """
+    return (
+        target.replace("..", "-")
+        .replace(".", "-")
+        .replace(":", "-")
+        .replace("/", "-")
+    )
 
 
 class WorkflowValidationError(Exception):
@@ -57,6 +83,14 @@ class Workflow:
         ]
         self.source: Path = source
         self.global_params: dict[str, Any] = data.get("parameters", {})
+        self.rollback: dict[str, Any] = data.get("rollback", {})
+        self.on_failure: str = self.rollback.get("on_failure", "fail")
+        self.expansion: dict[str, Any] = data.get("expansion", {
+            "anchor_steps": [],
+            "max_expansions": 10,
+            "on_conflict": "prefer_workflow",
+            "require_skill": True,
+        })
 
     def get_step(self, step_id: str) -> Optional[WorkflowStep]:
         """Look up a step by its ID."""
@@ -64,6 +98,210 @@ class Workflow:
             if step.id == step_id:
                 return step
         return None
+
+
+def _anchor_steps_for(workflow: Workflow) -> list[WorkflowStep]:
+    """Select the expansion anchors of *workflow*.
+
+    Anchors are the steps flagged ``metadata.expansion_anchor: true``. When
+    no step carries the flag, the first DAG level (every step with no
+    dependencies) acts as the anchor set. An anchor that never wrote
+    ``next_vectors.json`` is harmless — its lookup finds nothing.
+    """
+    anchors = [
+        s for s in workflow.steps
+        if s.metadata.get("expansion_anchor", False)
+    ]
+    if anchors:
+        return anchors
+    return [s for s in workflow.steps if not s.depends_on]
+
+
+def _anchor_next_vectors(
+    anchor: WorkflowStep,
+    base_scan_id: Optional[str],
+    state_dir: Path,
+) -> list[list[dict[str, Any]]]:
+    """Read the ``next_vectors`` lists stored on disk for *anchor*.
+
+    Sub-skills write them to ``state/{anchor.skill}/{scan_id}/
+    next_vectors.json`` with ``scan_id = {base}--{anchor.id}--{slug}``.
+
+    *base_scan_id* selects the lookup mode: given (runtime) reads that exact
+    path; ``None`` (dry run) takes the newest scan dir matching the anchor and
+    target, because a dry run mints a fresh scan id that never executed a
+    skill and only a PREVIOUS run can supply vectors.
+
+    Returns one list per anchor target that has state; empty when none does.
+    """
+    collected: list[list[dict[str, Any]]] = []
+
+    for target in anchor.targets:
+        slug = _target_slug(target)
+        if base_scan_id:
+            scan_dirs = [
+                state_dir / anchor.skill / f"{base_scan_id}--{anchor.id}--{slug}"
+            ]
+        else:
+            skill_dir = state_dir / anchor.skill
+            if not skill_dir.is_dir():
+                continue
+            # Newest first: the preview reports the latest real state, not the
+            # union of every past run of the same anchor.
+            scan_dirs = sorted(
+                (d for d in skill_dir.glob(f"*--{anchor.id}--{slug}") if d.is_dir()),
+                key=lambda d: d.stat().st_mtime,
+                reverse=True,
+            )[:1]
+
+        for scan_dir in scan_dirs:
+            nv_path = scan_dir / "next_vectors.json"
+            if not nv_path.exists():
+                continue
+            try:
+                with open(nv_path) as f:
+                    nv_data: dict[str, Any] = json.load(f)
+            except (json.JSONDecodeError, OSError) as exc:
+                logger.warning("Failed to read %s: %s", nv_path, exc)
+                continue
+            vectors = nv_data.get("next_vectors", [])
+            if isinstance(vectors, list):
+                collected.append(vectors)
+
+    return collected
+
+
+def _build_expanded_step(
+    vector: dict[str, Any],
+    anchor: WorkflowStep,
+    workflow: Workflow,
+    skill_loader: SkillLoader,
+    seen_ids: set[str],
+) -> Optional[WorkflowStep]:
+    """Build the expanded step a single ``next_vectors`` entry would create.
+
+    Shared by :meth:`WorkflowEngine._expand_from_anchor` (runtime) and
+    :func:`preview_expansion` (dry run) so a preview predicts exactly what a
+    real run injects — a preview that computed its own plan could drift from
+    runtime and lie about the workflow.
+
+    *seen_ids* carries the ids already planned or injected (seeded with the
+    workflow's own ids) and gains the built id on success, so a repeated
+    vector dedups exactly like the runtime loop does.
+
+    Returns ``None`` when the vector must be skipped: no skill name,
+    unregistered skill, duplicate step, or — for a target-less vector — a
+    skill already present in the workflow.
+    """
+    skill_name = vector.get("skill", "")
+    if not skill_name:
+        return None
+
+    # Per-vector targets (A): a vector may propose NEW targets (e.g.
+    # discovered subdomains). Validate (list of non-empty strings), order
+    # deterministically, and cap by max_targets_per_vector. Fall back to
+    # the anchor's targets when absent or empty — preserving pre-change
+    # behavior.
+    max_per_vec = int(workflow.expansion.get("max_targets_per_vector", 10))
+    proposed = vector.get("targets")
+    valid = [
+        t for t in (proposed or [])
+        if isinstance(t, str) and t.strip()
+    ]
+    if valid:
+        new_targets = sorted(
+            valid, key=lambda t: (t.lower(), t)
+        )[:max_per_vec]
+        carries_targets = True
+    else:
+        new_targets = list(anchor.targets)
+        carries_targets = False
+
+    # Dedup (B): vectors WITHOUT targets keep the original
+    # skip-if-skill-already-in-workflow rule for backward compatibility.
+    # Vectors WITH targets deliberately BYPASS that check — the same skill
+    # may expand again when it proposes a different target set — and
+    # instead dedup on the (skill, targets-key) pair via the hashed id
+    # below (identical pairs re-propose the same id and are skipped).
+    if not carries_targets:
+        # Skip if skill is already used in workflow
+        existing_skills = {s.skill for s in workflow.steps}
+        if skill_name in existing_skills:
+            return None
+
+    # Verify skill exists via SkillLoader
+    skill_def = skill_loader.get_skill(skill_name)
+    if not skill_def:
+        logger.debug("Expansion skip: skill '%s' not registered", skill_name)
+        return None
+
+    # Collision-free id (C): hash the sorted target set so distinct target
+    # sets get distinct ids (exp-{skill}-{anchor.id}-{targets_key}) and
+    # re-proposing an identical set hits the already-added skip below.
+    new_step_id = f"exp-{skill_name}-{anchor.id}-{_targets_key(new_targets)}"
+    if new_step_id in seen_ids:
+        return None  # already added
+
+    # Timeout (D): env-configurable, replaces the hardcoded 480. Scans
+    # self-cap internally; no time restriction below 2h per target per skill
+    # unless explicitly overridden by STEP_TIMEOUT_SECONDS.
+    try:
+        exp_timeout = int(os.environ.get("STEP_TIMEOUT_SECONDS", "7200"))
+    except ValueError:
+        exp_timeout = 7200
+
+    seen_ids.add(new_step_id)
+    return WorkflowStep({
+        "id": new_step_id,
+        "skill": skill_name,
+        "sub_process": skill_def.main_script,
+        "targets": new_targets,  # vector targets or anchor fallback
+        "parameters": {},
+        "depends_on": [anchor.id],
+        "condition": "prev.success",
+        "timeout": exp_timeout,
+        "metadata": {
+            "description": vector.get("reason", f"Auto-expanded {skill_name}"),
+            "phase": "automated-expansion",
+            "expanded": True,
+        },
+    })
+
+
+def preview_expansion(
+    workflow: Workflow,
+    skill_loader: SkillLoader,
+) -> list[WorkflowStep]:
+    """Plan the steps a real run would inject — without running anything.
+
+    Mirrors :meth:`WorkflowEngine._expand_from_anchor` (same anchor selection,
+    same vector resolution, same step builder) but reads the anchor's
+    ``next_vectors`` from the newest matching state dir on disk: a dry run
+    mints a fresh scan id that never executed a skill, so only a PREVIOUS
+    run can supply vectors. A cold dry run therefore legitimately previews
+    nothing — it cannot invent subdomains.
+
+    Read-only: no subprocess is spawned and nothing is written. *workflow* is
+    not mutated, so the caller can still print the static plan.
+
+    Returns the steps that would be injected, in injection order; empty when
+    no anchor state exists yet.
+    """
+    state_dir = Path(os.environ.get("STATE_DIR", "state"))
+    max_exp = int(workflow.expansion.get("max_expansions", 10))
+    seen_ids = {s.id for s in workflow.steps}
+    planned: list[WorkflowStep] = []
+
+    for anchor in _anchor_steps_for(workflow):
+        for vectors in _anchor_next_vectors(anchor, None, state_dir):
+            for vector in vectors[:max_exp]:
+                step = _build_expanded_step(
+                    vector, anchor, workflow, skill_loader, seen_ids,
+                )
+                if step is not None:
+                    planned.append(step)
+
+    return planned
 
 
 class WorkflowEngine:
@@ -82,88 +320,205 @@ class WorkflowEngine:
         self.skill_name = skill_name
         self._results: dict[str, ProcessResult] = {}
 
-    async def execute(self, workflow: Workflow) -> dict[str, ProcessResult]:
+    async def execute(
+        self,
+        workflow: Workflow,
+        expand_next_vectors: bool = False,
+    ) -> dict[str, ProcessResult]:
         """Execute all steps in a workflow respecting DAG dependencies.
+
+        Steps within the same DAG level (no interdependencies) run in parallel.
 
         Args:
             workflow: A loaded Workflow instance.
+            expand_next_vectors: If True, read next_vectors.json from anchor
+                steps after they complete and inject new steps for unknown skills.
 
         Returns:
             Dict of {step_id: ProcessResult} with all outcomes.
         """
-        # Topological sort
-        order = self._resolve_dag(workflow)
+        # Resolve DAG into parallel-ready levels
+        levels = self._resolve_dag_levels(workflow)
         logger.info(
-            "Workflow '%s': DAG resolved order: %s",
-            workflow.name, [s.id for s in order],
+            "Workflow '%s': DAG resolved into %d levels: %s",
+            workflow.name, len(levels),
+            [[s.id for s in level] for level in levels],
         )
 
-        for step in order:
-            # Check dependencies
-            if not self._dependencies_satisfied(step):
-                logger.warning(
-                    "Step '%s' skipped: dependencies not satisfied %s",
-                    step.id, step.depends_on,
-                )
-                self._results[step.id] = ProcessResult(
-                    scan_id=self.base_scan_id,
-                    skill=step.skill,
-                    target=",".join(step.targets),
-                    sub_process=step.sub_process,
-                    status=ProcessStatus.CANCELLED,
-                    error_context={"reason": "dependency_not_satisfied"},
-                )
-                continue
+        executed_levels = 0
+        executed_step_ids: set[str] = set()
 
-            # Check condition
-            if step.condition and not self._evaluate_condition(step.condition):
-                logger.info("Step '%s' skipped: condition '%s' not met", step.id, step.condition)
-                continue
+        while executed_levels < len(levels):
+            # Dispatch all steps in this level in parallel,
+            # skipping any already-executed steps (from re-resolved DAGs)
+            level = [
+                s for s in levels[executed_levels]
+                if s.id not in executed_step_ids
+            ]
+            if level:
+                tasks = [self._execute_step(step, workflow) for step in level]
+                await asyncio.gather(*tasks)
+                executed_step_ids.update(s.id for s in level)
 
-            # Execute step for each target
-            step_results = []
-            for target in step.targets:
-                scan_id = f"{self.base_scan_id}/{step.id}"
+            executed_levels += 1
 
-                # Write state before execution
-                self._update_step_state(scan_id, step.id, "running")
-
-                result = await self.manager.run_sub_process(
-                    scan_id=scan_id,
-                    skill=step.skill,
-                    target=target,
-                    sub_process_path=step.sub_process,
-                    parameters=step.parameters,
-                )
-                step_results.append(result)
-
-                # Write state after execution
-                self._update_step_state(
-                    scan_id, step.id, result.status.value,
-                    {"return_code": result.return_code},
-                )
-
-            # Store aggregate result (last target wins for status)
-            if step_results:
-                self._results[step.id] = step_results[-1]
-            else:
-                self._results[step.id] = ProcessResult(
-                    scan_id=self.base_scan_id,
-                    skill=step.skill,
-                    target="",
-                    sub_process=step.sub_process,
-                    status=ProcessStatus.CANCELLED,
-                    error_context={"reason": "no_targets"},
-                )
+            # Multi-wave expansion: after every completed level, check
+            # whether any anchor step produced next_vectors and inject
+            # new steps for unknown skills. Dedup prevents re-expanding
+            # the same anchor twice.
+            if expand_next_vectors and executed_levels >= 1:
+                expanded = await self._expand_from_anchor(workflow)
+                if expanded:
+                    logger.info(
+                        "Expanded %d next-vector step(s) into workflow "
+                        "(wave after level %d)", expanded, executed_levels - 1,
+                    )
+                    # Re-resolve DAG with new steps for remaining levels
+                    levels = self._resolve_dag_levels(workflow)
+                    logger.info(
+                        "Workflow '%s': DAG re-resolved into %d levels",
+                        workflow.name, len(levels),
+                    )
 
         # Write final workflow status
-        self._write_workflow_complete(workflow)
+        await self._write_workflow_complete(workflow)
         return dict(self._results)
 
-    def _resolve_dag(self, workflow: Workflow) -> list[WorkflowStep]:
-        """Topological sort of workflow steps by depends_on.
+    async def _expand_from_anchor(
+        self,
+        workflow: Workflow,
+    ) -> int:
+        """Read next_vectors.json from completed anchor steps and inject new steps.
 
-        Uses Kahn's algorithm. Raises WorkflowValidationError on cycles.
+        Vectors may propose NEW targets (e.g. discovered subdomains); those
+        use the vector's targets (capped), bypass the static skill-name skip,
+        and dedup on (skill, sorted-targets). Vectors without targets fall
+        back to the anchor's targets and keep the original skip rules. Each
+        expanded step depends on the anchor step.
+
+        Step construction is shared with :func:`preview_expansion`, so a
+        dry-run preview predicts exactly what a real run injects.
+
+        Returns:
+            Number of new steps injected.
+        """
+        anchor_steps = _anchor_steps_for(workflow)
+        state_dir = Path(os.environ.get("STATE_DIR", "state"))
+        max_exp = int(workflow.expansion.get("max_expansions", 10))
+        seen_ids = {s.id for s in workflow.steps}
+        injected = 0
+
+        for anchor in anchor_steps:
+            anchor_result = self._results.get(anchor.id)
+            if not anchor_result or anchor_result.status != ProcessStatus.DONE:
+                logger.debug("Anchor '%s' not done — skipping expansion", anchor.id)
+                continue
+
+            for vectors in _anchor_next_vectors(
+                anchor, self.base_scan_id, state_dir
+            ):
+                for vector in vectors[:max_exp]:
+                    step = _build_expanded_step(
+                        vector, anchor, workflow, self.skill_loader, seen_ids,
+                    )
+                    if step is None:
+                        continue
+                    workflow.steps.append(step)
+                    injected += 1
+                    logger.info(
+                        "Expanded step '%s' (skill=%s) from next_vector",
+                        step.id, step.skill,
+                    )
+
+        return injected
+
+    async def _execute_step(self, step: WorkflowStep, workflow: Workflow) -> None:
+        """Execute a single workflow step (may be called concurrently within a level)."""
+        # Check dependencies
+        if not self._dependencies_satisfied(step, workflow):
+            logger.warning(
+                "Step '%s' skipped: dependencies not satisfied %s",
+                step.id, step.depends_on,
+            )
+            self._results[step.id] = ProcessResult(
+                scan_id=self.base_scan_id,
+                skill=step.skill,
+                target=",".join(step.targets),
+                sub_process=step.sub_process,
+                status=ProcessStatus.CANCELLED,
+                error_context={"reason": "dependency_not_satisfied"},
+            )
+            return
+
+        # Check condition
+        if step.condition and not self._evaluate_condition(step.condition, step=step):
+            logger.info("Step '%s' skipped: condition '%s' not met", step.id, step.condition)
+            return
+
+        # Execute step for each target
+        step_results = []
+        for target in step.targets:
+            # Include target in scan_id to avoid collisions in multi-target steps
+            target_slug = _target_slug(target)
+            scan_id = f"{self.base_scan_id}--{step.id}--{target_slug}"
+
+            # Write state before execution
+            self._update_step_state(scan_id, step.id, "running")
+
+            # Configure WORKFLOW_SHARED_DIR so sub-skills can exchange data
+            # via write_to_shared_dir / read_predecessor_output
+            shared_dir = os.path.join(
+                os.environ.get("STATE_DIR", "state"),
+                "_shared",
+                self.base_scan_id,
+            )
+            os.makedirs(shared_dir, exist_ok=True)
+
+            result = await self.manager.run_sub_process(
+                scan_id=scan_id,
+                skill=step.skill,
+                target=target,
+                sub_process_path=step.sub_process,
+                parameters=step.parameters,
+                timeout=step.timeout,
+                env_overrides={"WORKFLOW_SHARED_DIR": os.path.abspath(shared_dir)},
+            )
+            step_results.append(result)
+
+            # Write state after execution
+            self._update_step_state(
+                scan_id, step.id, result.status.value,
+                {"return_code": result.return_code},
+            )
+
+        # Aggregate multi-target results: worst status wins
+        if step_results:
+            # Sort by status severity: FAILED > CANCELLED > DONE
+            status_rank = {ProcessStatus.FAILED: 0, ProcessStatus.CANCELLED: 1, ProcessStatus.DONE: 2}
+            worst = min(step_results, key=lambda r: status_rank.get(r.status, 99))
+            self._results[step.id] = worst
+            # Preserve all individual results in error context for audit
+            if len(step_results) > 1:
+                worst.error_context["multi_target"] = {
+                    r.target: {"status": r.status.value, "return_code": r.return_code}
+                    for r in step_results
+                }
+        else:
+            self._results[step.id] = ProcessResult(
+                scan_id=self.base_scan_id,
+                skill=step.skill,
+                target="",
+                sub_process=step.sub_process,
+                status=ProcessStatus.CANCELLED,
+                error_context={"reason": "no_targets"},
+            )
+
+    def _resolve_dag_levels(self, workflow: Workflow) -> list[list[WorkflowStep]]:
+        """Topological sort returning levels for parallel execution.
+
+        Each inner list contains steps with no interdependencies that can
+        run in parallel. Uses Kahn's algorithm.
+        Raises WorkflowValidationError on cycles.
         """
         step_map = {s.id: s for s in workflow.steps}
         in_degree: dict[str, int] = {s.id: 0 for s in workflow.steps}
@@ -178,51 +533,95 @@ class WorkflowEngine:
                 adjacency[dep].append(step.id)
                 in_degree[step.id] = in_degree.get(step.id, 0) + 1
 
+        levels: list[list[WorkflowStep]] = []
         queue = [s_id for s_id, deg in in_degree.items() if deg == 0]
-        sorted_steps = []
 
         while queue:
-            # Process all steps at the same level in parallel
-            level = queue[:]
-            queue = []
-            for s_id in level:
-                sorted_steps.append(step_map[s_id])
+            # Each queue batch forms one parallel-execution level
+            level_steps = [step_map[s_id] for s_id in queue]
+            levels.append(level_steps)
+            next_queue = []
+            for s_id in queue:
                 for neighbour in adjacency[s_id]:
                     in_degree[neighbour] -= 1
                     if in_degree[neighbour] == 0:
-                        queue.append(neighbour)
+                        next_queue.append(neighbour)
+            queue = next_queue
 
-        if len(sorted_steps) != len(workflow.steps):
-            cycle = set(workflow.steps) - set(sorted_steps)
+        resolved_count = sum(len(lvl) for lvl in levels)
+        if resolved_count != len(workflow.steps):
+            unresolved = set(workflow.steps) - {s for lvl in levels for s in lvl}
             raise WorkflowValidationError(
                 f"Cycle detected in workflow '{workflow.name}': "
-                f"steps {[s.id for s in cycle]}"
+                f"steps {[s.id for s in unresolved]}"
             )
 
-        return sorted_steps
+        return levels
 
-    def _dependencies_satisfied(self, step: WorkflowStep) -> bool:
-        """Check if all dependencies have completed successfully."""
+    def _dependencies_satisfied(self, step: WorkflowStep, workflow: Workflow) -> bool:
+        """Check if all dependencies have completed successfully.
+
+        When ``workflow.on_failure == "continue"``, FAILED dependencies
+        are allowed — subsequent steps still run. CANCELLED or missing
+        dependencies always block.
+        """
         for dep_id in step.depends_on:
             result = self._results.get(dep_id)
             if result is None:
+                return False
+            if result.status == ProcessStatus.CANCELLED:
+                return False
+            if result.status == ProcessStatus.FAILED:
+                if workflow.on_failure == "continue":
+                    continue  # allow step to run despite failed dep
                 return False
             if result.status != ProcessStatus.DONE:
                 return False
         return True
 
-    def _evaluate_condition(self, condition: str) -> bool:
+    def _evaluate_condition(self, condition: str, step: Optional[WorkflowStep] = None) -> bool:
         """Evaluate a simple step condition expression.
 
         Supports: ``prev.success``, ``prev.failed``, always ``true``.
+        Checks against ``self._results`` for actual previous step outcomes.
+        When *step* is provided, uses its ``depends_on`` list instead of
+        insertion order to determine which step result to check.
         """
         condition = condition.strip()
         if condition == "true":
             return True
-        if condition == "prev.success":
-            return True  # Would check previous step result in full impl
-        if condition == "prev.failed":
-            return False
+        if condition == "prev.success" or condition.startswith("prev.success"):
+            if not self._results:
+                return False
+            if step and step.depends_on:
+                # Check ALL dependencies explicitly — avoids insertion-order
+                # pitfalls with parallel DAG levels.
+                return all(
+                    self._results.get(dep_id)
+                    and self._results[dep_id].status == ProcessStatus.DONE
+                    for dep_id in step.depends_on
+                )
+            # Fallback for steps without explicit depends_on:
+            # ALL prior steps must have succeeded (deterministic, no dict-order dependency)
+            return all(
+                r.status == ProcessStatus.DONE
+                for r in self._results.values()
+            )
+        if condition == "prev.failed" or condition.startswith("prev.failed"):
+            if not self._results:
+                return False
+            if step and step.depends_on:
+                return any(
+                    self._results.get(dep_id)
+                    and self._results[dep_id].status == ProcessStatus.FAILED
+                    for dep_id in step.depends_on
+                )
+            # Fallback without explicit depends_on:
+            # ANY prior step failed (deterministic)
+            return any(
+                r.status == ProcessStatus.FAILED
+                for r in self._results.values()
+            )
         logger.debug("Unknown condition '%s', defaulting to True", condition)
         return True
 
@@ -254,7 +653,7 @@ class WorkflowEngine:
         except OSError as exc:
             logger.warning("Failed to write step state: %s", exc)
 
-    def _write_workflow_complete(self, workflow: Workflow) -> None:
+    async def _write_workflow_complete(self, workflow: Workflow) -> None:
         """Write the final workflow-level status file."""
         all_statuses = {s.id: self._results.get(s.id) for s in workflow.steps}
         overall = "done"
@@ -265,7 +664,7 @@ class WorkflowEngine:
         if failed:
             overall = "degraded" if len(failed) < len(workflow.steps) else "failed"
 
-        write_state(
+        await write_state(
             scan_id=self.base_scan_id,
             data={
                 "workflow": workflow.name,
@@ -307,6 +706,11 @@ def load_workflow(
     base_dir = workflows_dir or _WORKFLOWS_DIR
     if not base_dir.exists():
         raise FileNotFoundError(f"Workflows directory not found: {base_dir}")
+
+    # Sanitize: reject path traversal in user-supplied workflow name
+    cleaned = name.replace(".yaml", "").replace(".yml", "")
+    if ".." in cleaned.split("/") or cleaned.startswith("/") or cleaned.startswith("~"):
+        raise ValueError(f"Workflow name contains path traversal: {name!r}")
 
     # Try exact, with .yaml, with .yml
     candidates = [

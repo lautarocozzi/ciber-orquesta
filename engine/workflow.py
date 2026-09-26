@@ -34,6 +34,21 @@ def _targets_key(targets: list[str]) -> str:
     return hashlib.sha1(joined.encode("utf-8")).hexdigest()[:8]
 
 
+def _target_slug(target: str) -> str:
+    """Filesystem-safe slug for the ``{base}--{step}--{slug}`` scan id.
+
+    Single source of truth for that convention: state lookup, step
+    execution and the dry-run preview MUST agree on it, or the preview
+    resolves a different path than the runtime does.
+    """
+    return (
+        target.replace("..", "-")
+        .replace(".", "-")
+        .replace(":", "-")
+        .replace("/", "-")
+    )
+
+
 class WorkflowValidationError(Exception):
     """Raised when a workflow YAML fails validation."""
 
@@ -83,6 +98,210 @@ class Workflow:
             if step.id == step_id:
                 return step
         return None
+
+
+def _anchor_steps_for(workflow: Workflow) -> list[WorkflowStep]:
+    """Select the expansion anchors of *workflow*.
+
+    Anchors are the steps flagged ``metadata.expansion_anchor: true``. When
+    no step carries the flag, the first DAG level (every step with no
+    dependencies) acts as the anchor set. An anchor that never wrote
+    ``next_vectors.json`` is harmless — its lookup finds nothing.
+    """
+    anchors = [
+        s for s in workflow.steps
+        if s.metadata.get("expansion_anchor", False)
+    ]
+    if anchors:
+        return anchors
+    return [s for s in workflow.steps if not s.depends_on]
+
+
+def _anchor_next_vectors(
+    anchor: WorkflowStep,
+    base_scan_id: Optional[str],
+    state_dir: Path,
+) -> list[list[dict[str, Any]]]:
+    """Read the ``next_vectors`` lists stored on disk for *anchor*.
+
+    Sub-skills write them to ``state/{anchor.skill}/{scan_id}/
+    next_vectors.json`` with ``scan_id = {base}--{anchor.id}--{slug}``.
+
+    *base_scan_id* selects the lookup mode: given (runtime) reads that exact
+    path; ``None`` (dry run) takes the newest scan dir matching the anchor and
+    target, because a dry run mints a fresh scan id that never executed a
+    skill and only a PREVIOUS run can supply vectors.
+
+    Returns one list per anchor target that has state; empty when none does.
+    """
+    collected: list[list[dict[str, Any]]] = []
+
+    for target in anchor.targets:
+        slug = _target_slug(target)
+        if base_scan_id:
+            scan_dirs = [
+                state_dir / anchor.skill / f"{base_scan_id}--{anchor.id}--{slug}"
+            ]
+        else:
+            skill_dir = state_dir / anchor.skill
+            if not skill_dir.is_dir():
+                continue
+            # Newest first: the preview reports the latest real state, not the
+            # union of every past run of the same anchor.
+            scan_dirs = sorted(
+                (d for d in skill_dir.glob(f"*--{anchor.id}--{slug}") if d.is_dir()),
+                key=lambda d: d.stat().st_mtime,
+                reverse=True,
+            )[:1]
+
+        for scan_dir in scan_dirs:
+            nv_path = scan_dir / "next_vectors.json"
+            if not nv_path.exists():
+                continue
+            try:
+                with open(nv_path) as f:
+                    nv_data: dict[str, Any] = json.load(f)
+            except (json.JSONDecodeError, OSError) as exc:
+                logger.warning("Failed to read %s: %s", nv_path, exc)
+                continue
+            vectors = nv_data.get("next_vectors", [])
+            if isinstance(vectors, list):
+                collected.append(vectors)
+
+    return collected
+
+
+def _build_expanded_step(
+    vector: dict[str, Any],
+    anchor: WorkflowStep,
+    workflow: Workflow,
+    skill_loader: SkillLoader,
+    seen_ids: set[str],
+) -> Optional[WorkflowStep]:
+    """Build the expanded step a single ``next_vectors`` entry would create.
+
+    Shared by :meth:`WorkflowEngine._expand_from_anchor` (runtime) and
+    :func:`preview_expansion` (dry run) so a preview predicts exactly what a
+    real run injects — a preview that computed its own plan could drift from
+    runtime and lie about the workflow.
+
+    *seen_ids* carries the ids already planned or injected (seeded with the
+    workflow's own ids) and gains the built id on success, so a repeated
+    vector dedups exactly like the runtime loop does.
+
+    Returns ``None`` when the vector must be skipped: no skill name,
+    unregistered skill, duplicate step, or — for a target-less vector — a
+    skill already present in the workflow.
+    """
+    skill_name = vector.get("skill", "")
+    if not skill_name:
+        return None
+
+    # Per-vector targets (A): a vector may propose NEW targets (e.g.
+    # discovered subdomains). Validate (list of non-empty strings), order
+    # deterministically, and cap by max_targets_per_vector. Fall back to
+    # the anchor's targets when absent or empty — preserving pre-change
+    # behavior.
+    max_per_vec = int(workflow.expansion.get("max_targets_per_vector", 10))
+    proposed = vector.get("targets")
+    valid = [
+        t for t in (proposed or [])
+        if isinstance(t, str) and t.strip()
+    ]
+    if valid:
+        new_targets = sorted(
+            valid, key=lambda t: (t.lower(), t)
+        )[:max_per_vec]
+        carries_targets = True
+    else:
+        new_targets = list(anchor.targets)
+        carries_targets = False
+
+    # Dedup (B): vectors WITHOUT targets keep the original
+    # skip-if-skill-already-in-workflow rule for backward compatibility.
+    # Vectors WITH targets deliberately BYPASS that check — the same skill
+    # may expand again when it proposes a different target set — and
+    # instead dedup on the (skill, targets-key) pair via the hashed id
+    # below (identical pairs re-propose the same id and are skipped).
+    if not carries_targets:
+        # Skip if skill is already used in workflow
+        existing_skills = {s.skill for s in workflow.steps}
+        if skill_name in existing_skills:
+            return None
+
+    # Verify skill exists via SkillLoader
+    skill_def = skill_loader.get_skill(skill_name)
+    if not skill_def:
+        logger.debug("Expansion skip: skill '%s' not registered", skill_name)
+        return None
+
+    # Collision-free id (C): hash the sorted target set so distinct target
+    # sets get distinct ids (exp-{skill}-{anchor.id}-{targets_key}) and
+    # re-proposing an identical set hits the already-added skip below.
+    new_step_id = f"exp-{skill_name}-{anchor.id}-{_targets_key(new_targets)}"
+    if new_step_id in seen_ids:
+        return None  # already added
+
+    # Timeout (D): env-configurable, replaces the hardcoded 480. Scans
+    # self-cap internally; no time restriction below 2h per target per skill
+    # unless explicitly overridden by STEP_TIMEOUT_SECONDS.
+    try:
+        exp_timeout = int(os.environ.get("STEP_TIMEOUT_SECONDS", "7200"))
+    except ValueError:
+        exp_timeout = 7200
+
+    seen_ids.add(new_step_id)
+    return WorkflowStep({
+        "id": new_step_id,
+        "skill": skill_name,
+        "sub_process": skill_def.main_script,
+        "targets": new_targets,  # vector targets or anchor fallback
+        "parameters": {},
+        "depends_on": [anchor.id],
+        "condition": "prev.success",
+        "timeout": exp_timeout,
+        "metadata": {
+            "description": vector.get("reason", f"Auto-expanded {skill_name}"),
+            "phase": "automated-expansion",
+            "expanded": True,
+        },
+    })
+
+
+def preview_expansion(
+    workflow: Workflow,
+    skill_loader: SkillLoader,
+) -> list[WorkflowStep]:
+    """Plan the steps a real run would inject — without running anything.
+
+    Mirrors :meth:`WorkflowEngine._expand_from_anchor` (same anchor selection,
+    same vector resolution, same step builder) but reads the anchor's
+    ``next_vectors`` from the newest matching state dir on disk: a dry run
+    mints a fresh scan id that never executed a skill, so only a PREVIOUS
+    run can supply vectors. A cold dry run therefore legitimately previews
+    nothing — it cannot invent subdomains.
+
+    Read-only: no subprocess is spawned and nothing is written. *workflow* is
+    not mutated, so the caller can still print the static plan.
+
+    Returns the steps that would be injected, in injection order; empty when
+    no anchor state exists yet.
+    """
+    state_dir = Path(os.environ.get("STATE_DIR", "state"))
+    max_exp = int(workflow.expansion.get("max_expansions", 10))
+    seen_ids = {s.id for s in workflow.steps}
+    planned: list[WorkflowStep] = []
+
+    for anchor in _anchor_steps_for(workflow):
+        for vectors in _anchor_next_vectors(anchor, None, state_dir):
+            for vector in vectors[:max_exp]:
+                step = _build_expanded_step(
+                    vector, anchor, workflow, skill_loader, seen_ids,
+                )
+                if step is not None:
+                    planned.append(step)
+
+    return planned
 
 
 class WorkflowEngine:
@@ -148,7 +367,7 @@ class WorkflowEngine:
             # new steps for unknown skills. Dedup prevents re-expanding
             # the same anchor twice.
             if expand_next_vectors and executed_levels >= 1:
-                expanded = await self._expand_from_anchor(workflow, levels)
+                expanded = await self._expand_from_anchor(workflow)
                 if expanded:
                     logger.info(
                         "Expanded %d next-vector step(s) into workflow "
@@ -168,7 +387,6 @@ class WorkflowEngine:
     async def _expand_from_anchor(
         self,
         workflow: Workflow,
-        levels: list[list[WorkflowStep]],
     ) -> int:
         """Read next_vectors.json from completed anchor steps and inject new steps.
 
@@ -178,21 +396,17 @@ class WorkflowEngine:
         back to the anchor's targets and keep the original skip rules. Each
         expanded step depends on the anchor step.
 
+        Step construction is shared with :func:`preview_expansion`, so a
+        dry-run preview predicts exactly what a real run injects.
+
         Returns:
             Number of new steps injected.
         """
-        import json as _json
-
-        # Identify anchor steps (marked in YAML or first level)
-        anchor_steps = [
-            s for s in workflow.steps
-            if s.metadata.get("expansion_anchor", False)
-        ]
-        if not anchor_steps:
-            anchor_steps = list(levels[0]) if levels else []
-
+        anchor_steps = _anchor_steps_for(workflow)
+        state_dir = Path(os.environ.get("STATE_DIR", "state"))
+        max_exp = int(workflow.expansion.get("max_expansions", 10))
+        seen_ids = {s.id for s in workflow.steps}
         injected = 0
-        skills_dir = Path(os.environ.get("SKILLS_DIR", "skills"))
 
         for anchor in anchor_steps:
             anchor_result = self._results.get(anchor.id)
@@ -200,124 +414,20 @@ class WorkflowEngine:
                 logger.debug("Anchor '%s' not done — skipping expansion", anchor.id)
                 continue
 
-            # Build the path to next_vectors.json
-            # state/{skill}/{scan_id}/next_vectors.json
-            state_dir = Path(os.environ.get("STATE_DIR", "state"))
-            for target in anchor.targets:
-                target_slug = target.replace("..", "-").replace(".", "-").replace(":", "-").replace("/", "-")
-                anchor_scan_id = (
-                    f"{self.base_scan_id}--{anchor.id}--{target_slug}"
-                )
-                nv_path = (
-                    state_dir
-                    / anchor.skill
-                    / anchor_scan_id
-                    / "next_vectors.json"
-                )
-                if not nv_path.exists():
-                    continue
-
-                try:
-                    with open(nv_path) as f:
-                        nv_data: dict = _json.load(f)
-                except (_json.JSONDecodeError, OSError) as exc:
-                    logger.warning("Failed to read %s: %s", nv_path, exc)
-                    continue
-
-                vectors = nv_data.get("next_vectors", [])
-                max_exp = int(workflow.expansion.get("max_expansions", 10))
-
+            for vectors in _anchor_next_vectors(
+                anchor, self.base_scan_id, state_dir
+            ):
                 for vector in vectors[:max_exp]:
-                    skill_name = vector.get("skill", "")
-                    if not skill_name:
-                        continue
-
-                    # Per-vector targets (A): a vector may propose NEW targets
-                    # (e.g. discovered subdomains). Validate (list of non-empty
-                    # strings), order deterministically, and cap by
-                    # max_targets_per_vector. Fall back to the anchor's targets
-                    # when absent or empty — preserving pre-change behavior.
-                    max_per_vec = int(
-                        workflow.expansion.get("max_targets_per_vector", 10)
+                    step = _build_expanded_step(
+                        vector, anchor, workflow, self.skill_loader, seen_ids,
                     )
-                    proposed = vector.get("targets")
-                    valid = [
-                        t for t in (proposed or [])
-                        if isinstance(t, str) and t.strip()
-                    ]
-                    if valid:
-                        new_targets = sorted(
-                            valid, key=lambda t: (t.lower(), t)
-                        )[:max_per_vec]
-                        carries_targets = True
-                    else:
-                        new_targets = list(anchor.targets)
-                        carries_targets = False
-
-                    # Dedup (B): vectors WITHOUT targets keep the original
-                    # skip-if-skill-already-in-workflow rule for backward
-                    # compatibility. Vectors WITH targets deliberately BYPASS
-                    # that check — the same skill may expand again when it
-                    # proposes a different target set — and instead dedup on
-                    # the (skill, targets-key) pair via the hashed id below
-                    # (identical pairs re-propose the same id and are skipped).
-                    if not carries_targets:
-                        # Skip if skill is already used in workflow
-                        existing_skills = {s.skill for s in workflow.steps}
-                        if skill_name in existing_skills:
-                            continue
-
-                    # Verify skill exists via SkillLoader
-                    skill_def = self.skill_loader.get_skill(skill_name)
-                    if not skill_def:
-                        logger.debug(
-                            "Expansion skip: skill '%s' not registered", skill_name
-                        )
+                    if step is None:
                         continue
-
-                    # Collision-free id (C): hash the sorted target set so
-                    # distinct target sets get distinct ids (exp-{skill}-
-                    # {anchor.id}-{targets_key}) and re-proposing an identical
-                    # set hits the already-added skip below.
-                    new_step_id = (
-                        f"exp-{skill_name}-{anchor.id}-"
-                        f"{_targets_key(new_targets)}"
-                    )
-                    if workflow.get_step(new_step_id):
-                        continue  # already added
-
-                    # Timeout (D): env-configurable, replaces the hardcoded
-                    # 480. Scans self-cap internally; no time restriction
-                    # below 2h per target per skill unless explicitly
-                    # overridden by STEP_TIMEOUT_SECONDS.
-                    try:
-                        exp_timeout = int(
-                            os.environ.get("STEP_TIMEOUT_SECONDS", "7200")
-                        )
-                    except ValueError:
-                        exp_timeout = 7200
-
-                    step_data = {
-                        "id": new_step_id,
-                        "skill": skill_name,
-                        "sub_process": skill_def.main_script,
-                        "targets": new_targets,  # vector targets or anchor fallback
-                        "parameters": {},
-                        "depends_on": [anchor.id],
-                        "condition": "prev.success",
-                        "timeout": exp_timeout,
-                        "metadata": {
-                            "description": vector.get("reason", f"Auto-expanded {skill_name}"),
-                            "phase": "automated-expansion",
-                            "expanded": True,
-                        },
-                    }
-                    step = WorkflowStep(step_data)
                     workflow.steps.append(step)
                     injected += 1
                     logger.info(
                         "Expanded step '%s' (skill=%s) from next_vector",
-                        new_step_id, skill_name,
+                        step.id, step.skill,
                     )
 
         return injected
@@ -349,7 +459,7 @@ class WorkflowEngine:
         step_results = []
         for target in step.targets:
             # Include target in scan_id to avoid collisions in multi-target steps
-            target_slug = target.replace("..", "-").replace(".", "-").replace(":", "-").replace("/", "-")
+            target_slug = _target_slug(target)
             scan_id = f"{self.base_scan_id}--{step.id}--{target_slug}"
 
             # Write state before execution

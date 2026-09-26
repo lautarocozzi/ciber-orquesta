@@ -1,0 +1,1814 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Scan Report — {{TARGET}}</title>
+<style>
+/* ==========================================================================
+   CSS Variables — Dark Theme (default)
+   ========================================================================== */
+:root {
+  --bg-primary: #121212;
+  --bg-secondary: #1a1a2e;
+  --bg-card: #1e1e2e;
+  --bg-card-alt: #252540;
+  --border-color: #2a2a3e;
+  --text-primary: #e0e0e0;
+  --text-secondary: #a0a0b0;
+  --text-muted: #6c6c80;
+  --badge-critical: #dc3545;
+  --badge-high: #fd7e14;
+  --badge-medium: #ffc107;
+  --badge-low: #0dcaf0;
+  --badge-info: #6c757d;
+  --badge-none: #495057;
+  --success: #198754;
+  --danger: #dc3545;
+  --accent: #0d6efd;
+  --accent-dim: #0a58ca;
+  --section-gap: 24px;
+}
+
+/* ==========================================================================
+   Base Reset & Typography
+   ========================================================================== */
+*, *::before, *::after { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-size: 14px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+
+.container {
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 20px 16px;
+}
+
+/* ==========================================================================
+   Cards
+   ========================================================================== */
+.card {
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  padding: 20px 24px;
+  margin-bottom: var(--section-gap);
+}
+
+.card h2 {
+  margin: 0 0 16px 0;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-primary);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.card h3 {
+  margin: 16px 0 10px 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+/* ==========================================================================
+   Header Section
+   ========================================================================== */
+.header-section {
+  text-align: center;
+  padding: 32px 24px 24px;
+}
+
+.header-section h1 {
+  margin: 0 0 6px 0;
+  font-size: 24px;
+  font-weight: 700;
+  word-break: break-all;
+}
+
+.header-section .scan-meta {
+  color: var(--text-secondary);
+  font-size: 13px;
+  margin: 4px 0;
+}
+
+.header-section .scan-meta span {
+  color: var(--text-primary);
+  font-weight: 500;
+}
+
+/* Severity Badge */
+.severity-badge {
+  display: inline-block;
+  padding: 6px 18px;
+  border-radius: 20px;
+  font-size: 14px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: #fff;
+  margin-top: 12px;
+}
+
+/* ==========================================================================
+   Separate sub-section header within a card
+   ========================================================================== */
+.subsection-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  margin: 16px 0 8px 0;
+}
+
+/* ==========================================================================
+   Tables
+   ========================================================================== */
+.table-wrap {
+  overflow-x: auto;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+thead th {
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  font-weight: 600;
+  text-transform: uppercase;
+  font-size: 11px;
+  letter-spacing: 0.5px;
+  padding: 10px 12px;
+  text-align: left;
+  border-bottom: 1px solid var(--border-color);
+  white-space: nowrap;
+}
+
+tbody td {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border-color);
+  vertical-align: middle;
+}
+
+tbody tr:nth-child(even) {
+  background: var(--bg-card-alt);
+}
+
+tbody tr:hover {
+  background: rgba(13, 110, 253, 0.05);
+}
+
+/* ==========================================================================
+   Service Badges (inside port table)
+   ========================================================================== */
+.service-badge {
+  display: inline-block;
+  padding: 2px 10px;
+  border-radius: 12px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #fff;
+  white-space: nowrap;
+}
+
+/* ==========================================================================
+   Tech Badge Cloud
+   ========================================================================== */
+.tech-cloud {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.tech-badge {
+  display: inline-block;
+  padding: 4px 14px;
+  border-radius: 16px;
+  font-size: 12px;
+  font-weight: 500;
+  background: var(--bg-secondary);
+  color: var(--accent);
+  border: 1px solid var(--accent);
+}
+
+/* ==========================================================================
+   Subdomain Cards
+   ========================================================================== */
+.subdomain-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 12px;
+}
+.subdomain-card {
+  background: var(--bg-card-alt);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 14px;
+}
+.subdomain-card h3 {
+  margin: 0 0 4px;
+  font-size: 14px;
+  word-break: break-all;
+}
+.subdomain-card h3 a {
+  color: var(--accent);
+  text-decoration: none;
+}
+.subdomain-card h3 a:hover { text-decoration: underline; }
+.subdomain-field {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-top: 4px;
+  word-break: break-all;
+}
+.subdomain-card .tech-cloud { margin-top: 8px; }
+.subdomain-vuln {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-top: 8px;
+}
+.subdomain-muted {
+  font-size: 12px;
+  color: var(--text-muted);
+  font-style: italic;
+  margin-top: 8px;
+}
+
+/* ==========================================================================
+   Severity Bar Chart (Nuclei)
+   ========================================================================== */
+.severity-chart {
+  display: flex;
+  gap: 2px;
+  height: 28px;
+  border-radius: 6px;
+  overflow: hidden;
+  margin-bottom: 16px;
+}
+
+.severity-bar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 700;
+  color: #fff;
+  min-width: 0;
+  transition: width 0.3s ease;
+}
+
+.severity-bar.critical { background: var(--badge-critical); }
+.severity-bar.high     { background: var(--badge-high); }
+.severity-bar.medium   { background: var(--badge-medium); }
+.severity-bar.low      { background: var(--badge-low); }
+.severity-bar.info     { background: var(--badge-info); }
+.severity-bar.none     { background: var(--badge-none); }
+
+/* Severity label row below chart */
+.severity-labels {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+  font-size: 12px;
+}
+
+.severity-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.severity-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+/* ==========================================================================
+   Certificate Card
+   ========================================================================== */
+.cert-card {
+  background: var(--bg-secondary);
+  border-left: 4px solid var(--accent);
+  border-radius: 6px;
+  padding: 16px 20px;
+}
+
+.cert-card.expired {
+  border-left-color: var(--danger);
+  background: rgba(220, 53, 69, 0.08);
+}
+
+.cert-field {
+  display: flex;
+  gap: 8px;
+  padding: 4px 0;
+  font-size: 13px;
+}
+
+.cert-field .label {
+  color: var(--text-secondary);
+  min-width: 100px;
+  flex-shrink: 0;
+}
+
+.cert-field .value {
+  color: var(--text-primary);
+  word-break: break-all;
+}
+
+.expiry-warning {
+  display: inline-block;
+  padding: 2px 10px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #fff;
+  background: var(--danger);
+}
+
+/* ==========================================================================
+   Security Headers
+   ========================================================================== */
+.header-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.header-status.present  { color: var(--success); }
+.header-status.missing  { color: var(--danger); }
+
+/* ==========================================================================
+   Timeline
+   ========================================================================== */
+.timeline {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.timeline-item {
+  flex: 1 1 180px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 14px 16px;
+  min-width: 140px;
+}
+
+.timeline-item .source-name {
+  font-weight: 600;
+  font-size: 13px;
+  margin-bottom: 4px;
+}
+
+.timeline-item .source-status {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.timeline-item .source-status.present { color: var(--success); }
+.timeline-item .source-status.absent  { color: var(--text-muted); }
+
+/* ==========================================================================
+   No-Data Placeholder
+   ========================================================================== */
+.no-data {
+  text-align: center;
+  padding: 30px 16px;
+  color: var(--text-muted);
+  border: 1px dashed var(--border-color);
+  border-radius: 8px;
+  font-size: 14px;
+}
+
+/* ==========================================================================
+   Truncation Banner
+   ========================================================================== */
+.truncation-banner {
+  background: rgba(255, 193, 7, 0.1);
+  border: 1px solid rgba(255, 193, 7, 0.3);
+  border-radius: 6px;
+  padding: 10px 16px;
+  font-size: 12px;
+  color: var(--badge-medium);
+  margin-top: 12px;
+}
+
+/* Nuclei type badges & tags */
+.nuclei-type-badge {
+  display: inline-block;
+  padding: 1px 7px;
+  border-radius: 8px;
+  font-size: 10px;
+  font-weight: 600;
+  color: #fff;
+  text-transform: uppercase;
+  vertical-align: middle;
+  letter-spacing: 0.3px;
+}
+
+.nuclei-tag {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 9px;
+  font-weight: 500;
+  background: rgba(13, 110, 253, 0.15);
+  color: var(--accent);
+  white-space: nowrap;
+}
+
+/* ==========================================================================
+   TLS Protocol Table
+   ========================================================================== */
+.protocol-offered {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #fff;
+}
+
+.protocol-offered.offered     { background: var(--success); }
+.protocol-offered.not-offered { background: var(--danger); }
+.protocol-offered.not-tested  { background: var(--badge-none); }
+
+/* ==========================================================================
+   Vulnerability status
+   ========================================================================== */
+.vuln-status {
+  font-weight: 600;
+  font-size: 12px;
+}
+
+.vuln-status.ok       { color: var(--success); }
+.vuln-status.warn     { color: var(--badge-high); }
+.vuln-status.fail     { color: var(--danger); }
+.vuln-status.not-tested { color: var(--text-muted); }
+
+/* ==========================================================================
+   Status Indicator (green/red dot)
+   ========================================================================== */
+.status-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.status-indicator .dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.status-indicator .dot.live  { background: var(--success); }
+.status-indicator .dot.dead  { background: var(--danger); }
+
+/* ==========================================================================
+   Nikto Badges
+   ========================================================================== */
+.badge-outdated,
+.badge-cgi,
+.badge-info-disclosure {
+  display: inline-block;
+  padding: 2px 10px;
+  border-radius: 12px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #fff;
+  white-space: nowrap;
+}
+
+.badge-outdated         { background: var(--badge-high); }
+.badge-cgi              { background: var(--badge-info); }
+.badge-info-disclosure  { background: var(--badge-high); }
+
+/* ==========================================================================
+   Finding Message (monospace)
+   ========================================================================== */
+.finding-message {
+  font-family: "SF Mono", "Cascadia Code", "Fira Code", "Consolas", monospace;
+  font-size: 12px;
+  word-break: break-all;
+  max-width: 400px;
+}
+
+/* ==========================================================================
+   Partial Data Banner
+   ========================================================================== */
+.partial-banner {
+  background: rgba(255, 193, 7, 0.1);
+  border: 1px solid rgba(255, 193, 7, 0.3);
+  border-radius: 6px;
+  padding: 10px 16px;
+  font-size: 12px;
+  color: var(--badge-medium);
+  margin-top: 12px;
+}
+
+/* ==========================================================================
+   Responsive — tablets & mobile (< 640px)
+   ========================================================================== */
+@media (max-width: 640px) {
+  .container {
+    padding: 12px 10px;
+  }
+
+  .card {
+    padding: 14px 16px;
+  }
+
+  .header-section h1 {
+    font-size: 20px;
+  }
+
+  table, thead, tbody, th, td, tr {
+    display: block;
+  }
+
+  thead {
+    display: none;
+  }
+
+  tbody tr {
+    padding: 10px 0;
+    border-bottom: 2px solid var(--border-color);
+    background: transparent !important;
+  }
+
+  tbody tr:last-child {
+    border-bottom: none;
+  }
+
+  tbody td {
+    display: flex;
+    justify-content: space-between;
+    padding: 4px 8px;
+    border-bottom: none;
+    background: transparent !important;
+  }
+
+  tbody td::before {
+    content: attr(data-label);
+    font-weight: 600;
+    color: var(--text-secondary);
+    font-size: 11px;
+    text-transform: uppercase;
+  }
+
+  .timeline-item {
+    flex: 1 1 100%;
+  }
+
+  .subdomain-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .cert-field {
+    flex-direction: column;
+    gap: 2px;
+  }
+}
+
+/* ==========================================================================
+   Printing support
+   ========================================================================== */
+@media print {
+  body { background: #fff; color: #000; }
+  .card { background: #fff; border-color: #ddd; break-inside: avoid; }
+  .card h2 { border-bottom-color: #ddd; }
+  tbody tr:nth-child(even) { background: #f5f5f5; }
+  .severity-bar { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  .service-badge,
+  .protocol-offered,
+  .severity-badge,
+  .severity-dot { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+}
+</style>
+</head>
+<body>
+  <div class="container" id="app">
+    <!-- ================================================================
+         Section 1: Header
+         ================================================================ -->
+    <section id="section-header">
+      <div class="card header-section">
+        <h1 id="scan-target">—</h1>
+        <p class="scan-meta">Scan ID: <span id="scan-id">—</span></p>
+        <p class="scan-meta">Generated: <span id="scan-date">—</span></p>
+        <p class="scan-meta" id="parent-report-line" style="display:none">Part of the scan of <span id="parent-target"></span> — <a id="parent-report-link" href="#">back to parent report</a></p>
+        <div id="severity-badge"></div>
+      </div>
+    </section>
+
+    <!-- ================================================================
+         Section 2: Open Ports & Services
+         ================================================================ -->
+    <section id="section-ports" style="display:none">
+      <div class="card">
+        <h2>Open Ports &amp; Services</h2>
+        <div id="ports-host-status" style="font-size:12px;color:var(--text-secondary);margin-bottom:10px;"></div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Port</th>
+                <th>Protocol</th>
+                <th>Service</th>
+                <th>Version</th>
+              </tr>
+            </thead>
+            <tbody id="ports-tbody"></tbody>
+          </table>
+        </div>
+        <div id="ports-empty" class="no-data" style="display:none">No open ports found.</div>
+      </div>
+    </section>
+
+    <!-- ================================================================
+         Section 3: Web Technologies
+         ================================================================ -->
+    <section id="section-tech" style="display:none">
+      <div class="card">
+        <h2>Web Technologies</h2>
+        <div id="tech-server" style="font-size:12px;color:var(--text-secondary);margin-bottom:10px;"></div>
+        <div id="tech-cloud" class="tech-cloud"></div>
+        <div id="tech-empty" class="no-data" style="display:none">No technologies detected.</div>
+      </div>
+    </section>
+
+    <!-- ================================================================
+         Section 4: TLS Security (testssl)
+         ================================================================ -->
+    <section id="section-tls" style="display:none">
+      <div class="card">
+        <h2>TLS Security</h2>
+
+        <div class="subsection-title">Protocol Support</div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Protocol</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody id="tls-protocols-tbody"></tbody>
+          </table>
+        </div>
+
+        <div class="subsection-title">Vulnerabilities</div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Check</th>
+                <th>Result</th>
+              </tr>
+            </thead>
+            <tbody id="tls-vulns-tbody"></tbody>
+          </table>
+        </div>
+        <div id="tls-empty" class="no-data" style="display:none">No TLS data available.</div>
+      </div>
+    </section>
+
+    <!-- ================================================================
+         Section 5: Nuclei Findings
+         ================================================================ -->
+    <section id="section-nuclei" style="display:none">
+      <div class="card">
+        <h2>Nuclei Findings</h2>
+
+        <div id="nuclei-chart-area">
+          <div id="nuclei-severity-chart" class="severity-chart"></div>
+          <div id="nuclei-severity-labels" class="severity-labels"></div>
+        </div>
+
+        <div class="subsection-title">Top Findings</div>
+        <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Template</th>
+                    <th>Severity</th>
+                    <th>Name</th>
+                    <th>Matched</th>
+                    <th>Evidence</th>
+                  </tr>
+                </thead>
+            <tbody id="nuclei-tbody"></tbody>
+          </table>
+        </div>
+        <div id="nuclei-truncation" class="truncation-banner" style="display:none"></div>
+        <div id="nuclei-empty" class="no-data" style="display:none">No nuclei findings.</div>
+      </div>
+    </section>
+
+    <!-- ================================================================
+         Section 6: TLS Certificate
+         ================================================================ -->
+    <section id="section-cert" style="display:none">
+      <div class="card">
+        <h2>TLS Certificate</h2>
+        <div id="cert-card" class="cert-card">
+          <div class="cert-field">
+            <span class="label">Issuer</span>
+            <span class="value" id="cert-issuer">—</span>
+          </div>
+          <div class="cert-field">
+            <span class="label">Subject</span>
+            <span class="value" id="cert-subject">—</span>
+          </div>
+          <div class="cert-field">
+            <span class="label">Key Size</span>
+            <span class="value" id="cert-keysize">—</span>
+          </div>
+          <div class="cert-field">
+            <span class="label">Signature Algorithm</span>
+            <span class="value" id="cert-sigalg">—</span>
+          </div>
+          <div class="cert-field">
+            <span class="label">Valid From</span>
+            <span class="value" id="cert-valid-from">—</span>
+          </div>
+          <div class="cert-field">
+            <span class="label">Valid To</span>
+            <span class="value" id="cert-valid-to">—</span>
+          </div>
+          <div id="cert-expiry-warning" style="margin-top:8px;"></div>
+        </div>
+        <div id="cert-empty" class="no-data" style="display:none">No certificate data available.</div>
+      </div>
+    </section>
+
+    <!-- ================================================================
+         Section 7: Security Headers
+         ================================================================ -->
+    <section id="section-headers" style="display:none">
+      <div class="card">
+        <h2>Security Headers</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Header</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody id="headers-tbody"></tbody>
+          </table>
+        </div>
+        <div id="headers-empty" class="no-data" style="display:none">No header data available.</div>
+      </div>
+    </section>
+
+    <!-- ================================================================
+         Section 8: HTTP Probe Results
+         ================================================================ -->
+    <section id="section-httpx" style="display:none">
+      <div class="card">
+        <h2>HTTP Probe Results</h2>
+
+        <div id="httpx-status" style="margin-bottom:12px;"></div>
+
+        <div id="httpx-tech-area" style="margin-bottom:12px;">
+          <div class="subsection-title">Tech Stack</div>
+          <div id="httpx-tech-cloud" class="tech-cloud"></div>
+        </div>
+
+        <div id="httpx-meta" style="font-size:13px;color:var(--text-secondary);margin-bottom:8px;"></div>
+
+        <div id="httpx-4xx-warning" style="display:none;background:rgba(220,53,69,0.1);border:1px solid rgba(220,53,69,0.3);border-radius:6px;padding:10px 16px;font-size:12px;color:var(--danger);margin-top:8px;">Some endpoints returned 4xx/5xx status codes.</div>
+
+        <div id="httpx-partial" class="partial-banner" style="display:none"></div>
+
+        <div id="httpx-empty" class="no-data" style="display:none">No HTTP probe data available.</div>
+      </div>
+    </section>
+
+    <!-- ================================================================
+         Section 9: Web Server Vulnerabilities
+         ================================================================ -->
+    <section id="section-nikto" style="display:none">
+      <div class="card">
+        <h2>Web Server Vulnerabilities</h2>
+
+        <div id="nikto-target" style="font-size:13px;color:var(--text-secondary);margin-bottom:10px;"></div>
+
+        <div id="nikto-badges" style="margin-bottom:12px;display:flex;flex-wrap:wrap;gap:6px;"></div>
+
+        <div id="nikto-count" style="font-size:12px;color:var(--text-secondary);margin-bottom:10px;"></div>
+
+        <div class="subsection-title">Findings</div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>URL</th>
+                <th>Severity</th>
+                <th>Message</th>
+              </tr>
+            </thead>
+            <tbody id="nikto-tbody"></tbody>
+          </table>
+        </div>
+
+        <div id="nikto-truncation" class="truncation-banner" style="display:none"></div>
+        <div id="nikto-partial" class="partial-banner" style="display:none"></div>
+        <div id="nikto-empty" class="no-data" style="display:none">No nikto findings.</div>
+      </div>
+    </section>
+
+    <!-- ================================================================
+         Section 10: DNS Enumeration
+         ================================================================ -->
+    <section id="section-dns" style="display:none">
+      <div class="card">
+        <h2>DNS Enumeration</h2>
+
+        <div id="dns-summary" style="font-size:13px;color:var(--text-secondary);margin-bottom:12px;"></div>
+
+        <div id="dns-axfr-warning" style="display:none;background:rgba(220,53,69,0.1);border:1px solid rgba(220,53,69,0.3);border-radius:6px;padding:10px 16px;font-size:12px;color:var(--danger);margin-bottom:12px;"></div>
+
+        <div class="subsection-title">Name Servers</div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>NS</th>
+              </tr>
+            </thead>
+            <tbody id="dns-ns-tbody"></tbody>
+          </table>
+        </div>
+        <div id="dns-ns-empty" class="no-data" style="display:none">No name servers recorded.</div>
+
+        <div class="subsection-title">Mail Exchange</div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>MX</th>
+              </tr>
+            </thead>
+            <tbody id="dns-mx-tbody"></tbody>
+          </table>
+        </div>
+        <div id="dns-mx-empty" class="no-data" style="display:none">No mail exchangers recorded.</div>
+
+        <div class="subsection-title">Zone Transfer</div>
+        <div id="dns-axfr" style="font-size:13px;"></div>
+
+        <div id="dns-partial" class="partial-banner" style="display:none"></div>
+
+        <div id="dns-empty" class="no-data" style="display:none">No DNS data available.</div>
+      </div>
+    </section>
+
+    <!-- ================================================================
+         Section 11: Subdomains
+         ================================================================ -->
+    <section id="section-subdomains" style="display:none">
+      <div class="card">
+        <h2>Subdomains</h2>
+
+        <div id="subdomains-count" style="font-size:13px;color:var(--text-secondary);margin-bottom:12px;"></div>
+
+        <div id="subdomains-cards" class="subdomain-grid"></div>
+
+        <div id="subdomains-note" style="display:none;font-size:12px;color:var(--text-secondary);margin-top:10px;"></div>
+
+        <div id="subdomains-empty" class="no-data" style="display:none">No subdomains discovered.</div>
+      </div>
+    </section>
+
+    <!-- ================================================================
+         Section 12: Scan Timeline
+         ================================================================ -->
+    <section id="section-timeline">
+      <div class="card">
+        <h2>Scan Timeline</h2>
+        <div id="timeline" class="timeline"></div>
+      </div>
+    </section>
+
+  </div><!-- /container -->
+
+  <script>
+    // ========================================================================
+    // REPORT_DATA — injected by generate-report.sh at build time
+    // ========================================================================
+    const REPORT_DATA = {{REPORT_DATA}};
+
+    // ========================================================================
+    // DOM Ready — render all sections
+    // ========================================================================
+    document.addEventListener('DOMContentLoaded', function() {
+      var data = REPORT_DATA;
+
+      // ---- Helpers ---------------------------------------------------------
+      function show(id) {
+        var el = document.getElementById(id);
+        if (el) el.style.display = '';
+      }
+      function hide(id) {
+        var el = document.getElementById(id);
+        if (el) el.style.display = 'none';
+      }
+
+      var SEVERITY_COLORS = {
+        critical: '#dc3545',
+        high:     '#fd7e14',
+        medium:   '#ffc107',
+        low:      '#0dcaf0',
+        info:     '#6c757d',
+        none:     '#6c757d'
+      };
+
+      var SEVERITY_RANK = {
+        critical: 6,
+        high:     5,
+        medium:   4,
+        low:      3,
+        info:     2,
+        none:     1
+      };
+
+      function escHtml(s) {
+        if (s == null) return '';
+        return String(s)
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;');
+      }
+
+      function fmtDate(iso) {
+        if (!iso) return 'N/A';
+        try {
+          return new Date(iso).toLocaleString();
+        } catch(e) {
+          return iso;
+        }
+      }
+
+      function severityBadgeHtml(severity, label) {
+        var color = SEVERITY_COLORS[severity] || '#6c757d';
+        return '<span class="severity-badge" style="background:' + color + '">' + escHtml(label || severity || 'none') + '</span>';
+      }
+
+      // Service type → color mapping
+      function serviceColor(service) {
+        var s = (service || '').toLowerCase();
+        if (s.indexOf('http') !== -1 || s === 'www' || s === 'https' || s === 'http-proxy') return '#0d6efd';
+        if (s.indexOf('mysql') !== -1 || s.indexOf('postgres') !== -1 || s.indexOf('mssql') !== -1 ||
+            s.indexOf('mongodb') !== -1 || s.indexOf('redis') !== -1 || s.indexOf('cassandra') !== -1 ||
+            s.indexOf('oracle') !== -1) return '#dc3545';
+        if (s.indexOf('smtp') !== -1 || s.indexOf('pop3') !== -1 || s.indexOf('imap') !== -1 ||
+            s.indexOf('submission') !== -1) return '#6f42c1';
+        if (s.indexOf('ssh') !== -1) return '#198754';
+        if (s.indexOf('dns') !== -1 || s.indexOf('domain') !== -1) return '#fd7e14';
+        if (s.indexOf('ftp') !== -1) return '#e83e8c';
+        return '#6c757d';
+      }
+
+      // ======================================================================
+      // 1. Header
+      // ======================================================================
+      function renderHeader(d) {
+        document.getElementById('scan-target').textContent = d.target || 'N/A';
+        document.getElementById('scan-id').textContent = d.scan_id || 'N/A';
+        document.getElementById('scan-date').textContent = fmtDate(d.generated_at);
+        document.getElementById('severity-badge').innerHTML = severityBadgeHtml(d.overall_severity);
+
+        // Child reports link back to the parent they were expanded from.
+        if (d.parent_report) {
+          var line = document.getElementById('parent-report-line');
+          line.style.display = '';
+          document.getElementById('parent-target').textContent = d.subdomain && d.subdomain.name
+            ? d.subdomain.name
+            : (d.target || 'this host');
+          document.getElementById('parent-report-link').href = d.parent_report;
+        } else {
+          document.getElementById('parent-report-line').style.display = 'none';
+        }
+      }
+
+      // ======================================================================
+      // 2. Open Ports & Services
+      // ======================================================================
+      function renderPorts(nmap) {
+        if (!nmap.present) {
+          hide('section-ports');
+          return;
+        }
+        var ports = nmap.open_ports || [];
+        if (ports.length === 0 && (!nmap.host_status || nmap.host_status !== 'up')) {
+          hide('section-ports');
+          return;
+        }
+        show('section-ports');
+
+        var hostStatusEl = document.getElementById('ports-host-status');
+        hostStatusEl.textContent = 'Host status: ' + escHtml(nmap.host_status || 'unknown');
+
+        var tbody = document.getElementById('ports-tbody');
+        tbody.innerHTML = '';
+
+        if (ports.length === 0) {
+          document.getElementById('ports-empty').style.display = '';
+          return;
+        }
+        document.getElementById('ports-empty').style.display = 'none';
+
+        ports.forEach(function(p) {
+          var tr = document.createElement('tr');
+          var color = serviceColor(p.service);
+          var version = p.version || '';
+          var service = p.service || 'unknown';
+          tr.innerHTML =
+            '<td data-label="Port">' + escHtml(String(p.port)) + '</td>' +
+            '<td data-label="Protocol">' + escHtml(p.protocol || 'tcp') + '</td>' +
+            '<td data-label="Service"><span class="service-badge" style="background:' + color + '">' + escHtml(service) + '</span></td>' +
+            '<td data-label="Version">' + escHtml(version) + '</td>';
+          tbody.appendChild(tr);
+        });
+      }
+
+      // ======================================================================
+      // 3. Web Technologies
+      // ======================================================================
+      function renderTechs(whatweb) {
+        if (!whatweb.present) {
+          hide('section-tech');
+          return;
+        }
+        var techs = whatweb.technologies || [];
+        if (techs.length === 0) {
+          hide('section-tech');
+          return;
+        }
+        show('section-tech');
+
+        if (whatweb.server_banner) {
+          document.getElementById('tech-server').textContent = 'Server: ' + escHtml(whatweb.server_banner);
+        }
+        if (whatweb.ip) {
+          document.getElementById('tech-server').textContent += (whatweb.server_banner ? ' — ' : '') + 'IP: ' + escHtml(whatweb.ip);
+        }
+
+        var cloud = document.getElementById('tech-cloud');
+        cloud.innerHTML = '';
+        techs.forEach(function(t) {
+          var span = document.createElement('span');
+          span.className = 'tech-badge';
+          span.textContent = t.name + (t.version ? ' ' + t.version : '');
+          cloud.appendChild(span);
+        });
+      }
+
+      // ======================================================================
+      // 4. TLS Findings
+      // ======================================================================
+      function renderTLS(testssl) {
+        if (!testssl.present) {
+          hide('section-tls');
+          return;
+        }
+        var protocols = testssl.protocols || {};
+        var vulns = testssl.vulnerabilities || {};
+        if (Object.keys(protocols).length === 0 && Object.keys(vulns).length === 0) {
+          hide('section-tls');
+          return;
+        }
+        show('section-tls');
+
+        // Protocol table
+        var protoTbody = document.getElementById('tls-protocols-tbody');
+        protoTbody.innerHTML = '';
+        var protoNames = ['TLS1_3', 'TLS1_2', 'TLS1_1', 'TLS1_0', 'SSL3', 'SSL2'];
+        protoNames.forEach(function(p) {
+          var status = protocols[p] || 'not tested';
+          var cssClass = 'not-tested';
+          if (status === 'offered') cssClass = 'offered';
+          else if (status === 'not offered') cssClass = 'not-offered';
+          else cssClass = 'not-tested';
+          var tr = document.createElement('tr');
+          tr.innerHTML =
+            '<td data-label="Protocol">' + escHtml(p.replace(/_/g, '.')) + '</td>' +
+            '<td data-label="Status"><span class="protocol-offered ' + cssClass + '">' + escHtml(status) + '</span></td>';
+          protoTbody.appendChild(tr);
+        });
+
+        // Vulnerability table
+        var vulnTbody = document.getElementById('tls-vulns-tbody');
+        vulnTbody.innerHTML = '';
+        var vulnKeys = Object.keys(vulns);
+        if (vulnKeys.length === 0) {
+          vulnTbody.innerHTML = '<tr><td colspan="2" class="no-data">No vulnerability checks available.</td></tr>';
+        } else {
+          vulnKeys.forEach(function(key) {
+            var result = vulns[key] || 'not tested';
+            var cssClass = 'not-tested';
+            var label = result;
+            if (result === 'not vulnerable' || result === 'ok' || result === 'passed') {
+              cssClass = 'ok';
+              label = 'Not Vulnerable';
+            } else if (result === 'vulnerable' || result === 'failed') {
+              cssClass = 'fail';
+              label = 'Vulnerable';
+            } else if (result === 'not tested' || result === 'skipped') {
+              cssClass = 'not-tested';
+              label = 'Not Tested';
+            } else {
+              cssClass = 'warn';
+            }
+            var tr = document.createElement('tr');
+            tr.innerHTML =
+              '<td data-label="Check">' + escHtml(key.replace(/_/g, ' ')) + '</td>' +
+              '<td data-label="Result"><span class="vuln-status ' + cssClass + '">' + escHtml(label) + '</span></td>';
+            vulnTbody.appendChild(tr);
+          });
+        }
+      }
+
+      // ======================================================================
+      // 5. Nuclei Findings
+      // ======================================================================
+      function renderNuclei(nuclei) {
+        if (!nuclei.present) {
+          hide('section-nuclei');
+          return;
+        }
+        var findings = nuclei.findings || [];
+        var counts = nuclei.severity_counts || {};
+        var total = nuclei.total_matched || 0;
+        if (total === 0) {
+          hide('section-nuclei');
+          return;
+        }
+        show('section-nuclei');
+
+        // Severity bar chart
+        var sevOrder = ['critical', 'high', 'medium', 'low', 'info'];
+        var maxCount = 0;
+        sevOrder.forEach(function(s) {
+          var c = counts[s] || 0;
+          if (c > maxCount) maxCount = c;
+        });
+        if (maxCount === 0) maxCount = 1; // avoid division by zero
+
+        var chartEl = document.getElementById('nuclei-severity-chart');
+        chartEl.innerHTML = '';
+        sevOrder.forEach(function(s) {
+          var c = counts[s] || 0;
+          if (c === 0) return;
+          var bar = document.createElement('div');
+          bar.className = 'severity-bar ' + s;
+          var pct = (c / maxCount) * 100;
+          bar.style.width = pct + '%';
+          bar.textContent = c;
+          bar.title = s + ': ' + c;
+          chartEl.appendChild(bar);
+        });
+
+        // Severity labels
+        var labelsEl = document.getElementById('nuclei-severity-labels');
+        labelsEl.innerHTML = '';
+        sevOrder.forEach(function(s) {
+          var c = counts[s] || 0;
+          var label = document.createElement('div');
+          label.className = 'severity-label';
+          var dot = document.createElement('span');
+          dot.className = 'severity-dot';
+          dot.style.background = SEVERITY_COLORS[s] || '#6c757d';
+          label.appendChild(dot);
+          label.appendChild(document.createTextNode(s + ': ' + c));
+          labelsEl.appendChild(label);
+        });
+
+        // Findings table (already truncated to top-50 by generate-report.sh)
+        var tbody = document.getElementById('nuclei-tbody');
+        tbody.innerHTML = '';
+
+        if (findings.length === 0) {
+          document.getElementById('nuclei-empty').style.display = '';
+          return;
+        }
+        document.getElementById('nuclei-empty').style.display = 'none';
+
+        // Sort: critical first, then high, medium, low, info, unknown
+        var sorted = findings.slice().sort(function(a, b) {
+          var ra = SEVERITY_RANK[a.severity] || 0;
+          var rb = SEVERITY_RANK[b.severity] || 0;
+          return rb - ra;
+        });
+
+        // Type → color mapping
+        function typeColor(t) {
+          var s = (t || '').toLowerCase();
+          if (s === 'http') return '#0d6efd';
+          if (s === 'dns') return '#6f42c1';
+          if (s === 'ssl' || s === 'tls') return '#198754';
+          if (s === 'network') return '#fd7e14';
+          if (s === 'headless') return '#e83e8c';
+          return '#6c757d';
+        }
+
+        sorted.forEach(function(f) {
+          var sev = f.severity || 'info';
+          var color = SEVERITY_COLORS[sev] || '#6c757d';
+          var ftype = f.type || '';
+          var typeCol = typeColor(ftype);
+          var matched = f.matched_at || '';
+          var extracted = f.extracted_results || [];
+          var tags = f.tags || [];
+          var desc = f.description || '';
+
+          // Template ID cell: ID + type badge + tags
+          var tagHtml = '';
+          if (tags.length > 0) {
+            tagHtml = '<div style="margin-top:4px;display:flex;flex-wrap:wrap;gap:3px;">';
+            tags.slice(0, 5).forEach(function(t) {
+              tagHtml += '<span class="nuclei-tag">' + escHtml(t) + '</span>';
+            });
+            if (tags.length > 5) {
+              tagHtml += '<span class="nuclei-tag" style="background:var(--badge-none)">+' + (tags.length - 5) + '</span>';
+            }
+            tagHtml += '</div>';
+          }
+
+          var idCell = '<div><strong>' + escHtml(f.template_id || 'N/A') + '</strong>' +
+            ' <span class="nuclei-type-badge" style="background:' + typeCol + '">' + escHtml(ftype) + '</span></div>' +
+            tagHtml;
+
+          // Name cell: name + description (small, muted)
+          var nameCell = '<div><strong>' + escHtml(f.name || 'N/A') + '</strong></div>';
+          if (desc) {
+            nameCell += '<div style="font-size:11px;color:var(--text-muted);margin-top:2px;max-width:350px;">' + escHtml(desc) + '</div>';
+          }
+
+          // Matched cell
+          var matchCell = '<code style="font-size:11px;word-break:break-all;color:var(--text-secondary);">' + escHtml(matched) + '</code>';
+
+          // Evidence cell
+          var evidenceCell = '';
+          if (extracted.length > 0) {
+            evidenceCell = '<code style="font-size:11px;word-break:break-all;color:var(--success);">' +
+              extracted.map(function(e) { return escHtml(e); }).join('<br>') +
+              '</code>';
+          } else {
+            evidenceCell = '<span style="color:var(--text-muted);font-size:11px;">—</span>';
+          }
+
+          var tr = document.createElement('tr');
+          tr.innerHTML =
+            '<td data-label="Template">' + idCell + '</td>' +
+            '<td data-label="Severity"><span class="service-badge" style="background:' + color + '">' + escHtml(sev) + '</span></td>' +
+            '<td data-label="Name">' + nameCell + '</td>' +
+            '<td data-label="Matched">' + matchCell + '</td>' +
+            '<td data-label="Evidence">' + evidenceCell + '</td>';
+          tbody.appendChild(tr);
+        });
+
+        // Truncation banner
+        var truncated = nuclei.truncated_count || 0;
+        if (truncated > 0) {
+          var banner = document.getElementById('nuclei-truncation');
+          banner.style.display = '';
+          banner.textContent = truncated + ' additional findings not shown. Full results in state/nuclei-analyzer/' + escHtml(data.scan_id || '') + '/consolidated.json';
+        }
+      }
+
+      // ======================================================================
+      // 6. TLS Certificate
+      // ======================================================================
+      function renderCert(testssl) {
+        if (!testssl.present) {
+          hide('section-cert');
+          return;
+        }
+        var cert = testssl.certificate;
+        if (!cert || !cert.issuer) {
+          hide('section-cert');
+          return;
+        }
+        show('section-cert');
+
+        document.getElementById('cert-issuer').textContent = cert.issuer || 'N/A';
+        document.getElementById('cert-subject').textContent = cert.subject || 'N/A';
+        document.getElementById('cert-keysize').textContent = cert.key_size ? cert.key_size + ' bits' : 'N/A';
+        document.getElementById('cert-sigalg').textContent = cert.signature_algorithm || 'N/A';
+        document.getElementById('cert-valid-from').textContent = fmtDate(cert.valid_from);
+        document.getElementById('cert-valid-to').textContent = fmtDate(cert.valid_to);
+
+        // Expiry check
+        var warningEl = document.getElementById('cert-expiry-warning');
+        warningEl.innerHTML = '';
+        if (cert.valid_to) {
+          try {
+            var now = data.generated_at ? new Date(data.generated_at) : new Date();
+            var expiry = new Date(cert.valid_to);
+            if (expiry < now) {
+              document.getElementById('cert-card').className = 'cert-card expired';
+              warningEl.innerHTML = '<span class="expiry-warning">CERTIFICATE EXPIRED</span>';
+            } else {
+              document.getElementById('cert-card').className = 'cert-card';
+            }
+          } catch(e) {
+            // ignore date parse errors
+          }
+        }
+      }
+
+      // ======================================================================
+      // 7. Security Headers
+      // ======================================================================
+      function renderHeaders(whatweb) {
+        if (!whatweb.present) {
+          hide('section-headers');
+          return;
+        }
+        var headers = whatweb.security_headers;
+        if (!headers || Object.keys(headers).length === 0) {
+          hide('section-headers');
+          return;
+        }
+        show('section-headers');
+
+        var tbody = document.getElementById('headers-tbody');
+        tbody.innerHTML = '';
+
+        var headerLabels = {
+          'strict_transport_security': 'Strict-Transport-Security',
+          'x_frame_options': 'X-Frame-Options',
+          'x_content_type_options': 'X-Content-Type-Options',
+          'x_xss_protection': 'X-XSS-Protection',
+          'content_security_policy': 'Content-Security-Policy',
+          'referrer_policy': 'Referrer-Policy',
+          'permissions_policy': 'Permissions-Policy'
+        };
+
+        var seen = false;
+        Object.keys(headerLabels).forEach(function(key) {
+          if (headers.hasOwnProperty(key)) {
+            seen = true;
+            var present = headers[key] === true || headers[key] === 'true' || headers[key] === true;
+            var tr = document.createElement('tr');
+            tr.innerHTML =
+              '<td data-label="Header">' + escHtml(headerLabels[key]) + '</td>' +
+              '<td data-label="Status"><span class="header-status ' + (present ? 'present' : 'missing') + '">' +
+              (present ? '\u2713 Present' : '\u2717 Missing') + '</span></td>';
+            tbody.appendChild(tr);
+          }
+        });
+
+        if (!seen) {
+          hide('section-headers');
+        }
+      }
+
+      // ======================================================================
+      // 8. HTTP Probe Results (httpx)
+      // ======================================================================
+      function renderHttpx(httpx) {
+        if (!httpx.present) {
+          hide('section-httpx');
+          return;
+        }
+        // If no live web server and not partial, hide
+        if (!httpx.live_web_server && !httpx.partial) {
+          hide('section-httpx');
+          return;
+        }
+        show('section-httpx');
+
+        // Live server indicator
+        var statusEl = document.getElementById('httpx-status');
+        var dotClass = httpx.live_web_server ? 'live' : 'dead';
+        var statusText = httpx.live_web_server ? 'Web server is LIVE' : 'No live web server detected';
+        statusEl.innerHTML = '<div class="status-indicator"><span class="dot ' + dotClass + '"></span> ' + escHtml(statusText) + '</div>';
+
+        // HTTPS enforcement
+        var enforcements = [];
+        if (httpx.https_enforced) enforcements.push('HTTPS enforced');
+        if (httpx.http_only) enforcements.push('HTTP only (no HTTPS)');
+        if (enforcements.length > 0) {
+          statusEl.innerHTML += '<div style="margin-top:6px;font-size:12px;color:var(--text-secondary);">' + escHtml(enforcements.join(' | ')) + '</div>';
+        }
+
+        // Tech stack badge cloud
+        var techStack = httpx.tech_stack || [];
+        var techCloud = document.getElementById('httpx-tech-cloud');
+        techCloud.innerHTML = '';
+        if (techStack.length > 0) {
+          techStack.forEach(function(t) {
+            var span = document.createElement('span');
+            span.className = 'tech-badge';
+            span.textContent = t;
+            techCloud.appendChild(span);
+          });
+          document.getElementById('httpx-tech-area').style.display = '';
+        } else {
+          document.getElementById('httpx-tech-area').style.display = 'none';
+        }
+
+        // Meta info
+        var metaEl = document.getElementById('httpx-meta');
+        var metaParts = [];
+        var epCount = httpx.endpoint_count != null ? httpx.endpoint_count : (httpx.endpoints || []).length;
+        metaParts.push('Endpoints discovered: ' + epCount);
+        metaEl.textContent = metaParts.join(' | ');
+
+        // 4xx/5xx warning
+        document.getElementById('httpx-4xx-warning').style.display = httpx.has_4xx_5xx ? '' : 'none';
+
+        // Partial banner
+        if (httpx.partial) {
+          var partialEl = document.getElementById('httpx-partial');
+          partialEl.style.display = '';
+          partialEl.textContent = 'HTTP probe results may be incomplete (partial scan).';
+        } else {
+          document.getElementById('httpx-partial').style.display = 'none';
+        }
+
+        document.getElementById('httpx-empty').style.display = 'none';
+      }
+
+      // ======================================================================
+      // 9. Web Server Vulnerabilities (nikto)
+      // ======================================================================
+      function renderNikto(nikto) {
+        if (!nikto.present) {
+          hide('section-nikto');
+          return;
+        }
+        var findings = nikto.findings || [];
+        if (findings.length === 0) {
+          hide('section-nikto');
+          return;
+        }
+        show('section-nikto');
+
+        // Target info
+        var targetEl = document.getElementById('nikto-target');
+        var targetParts = [];
+        if (nikto.host) targetParts.push('Host: ' + escHtml(nikto.host));
+        if (nikto.ip) targetParts.push('IP: ' + escHtml(nikto.ip));
+        if (nikto.port) targetParts.push('Port: ' + escHtml(String(nikto.port)));
+        if (nikto.server_banner) targetParts.push('Server: ' + escHtml(nikto.server_banner));
+        targetEl.textContent = targetParts.join(' | ');
+
+        // Source badges
+        var badgesEl = document.getElementById('nikto-badges');
+        badgesEl.innerHTML = '';
+        var sources = nikto.sources_available || [];
+        sources.forEach(function(s) {
+          var span = document.createElement('span');
+          span.className = 'service-badge';
+          span.style.background = '#6c757d';
+          span.textContent = s;
+          badgesEl.appendChild(span);
+        });
+
+        // Special badges
+        if (nikto.has_outdated) {
+          var outdatedBadge = document.createElement('span');
+          outdatedBadge.className = 'badge-outdated';
+          outdatedBadge.textContent = 'Outdated Server';
+          badgesEl.appendChild(outdatedBadge);
+        }
+        if (nikto.has_cgi) {
+          var cgiBadge = document.createElement('span');
+          cgiBadge.className = 'badge-cgi';
+          cgiBadge.textContent = 'CGI Detected';
+          badgesEl.appendChild(cgiBadge);
+        }
+        if (nikto.has_info_disclosure) {
+          var infoBadge = document.createElement('span');
+          infoBadge.className = 'badge-info-disclosure';
+          infoBadge.textContent = 'Info Disclosure';
+          badgesEl.appendChild(infoBadge);
+        }
+
+        // Finding count
+        document.getElementById('nikto-count').textContent = 'Total findings: ' + findings.length;
+
+        // Findings table
+        var tbody = document.getElementById('nikto-tbody');
+        tbody.innerHTML = '';
+
+        if (findings.length === 0) {
+          document.getElementById('nikto-empty').style.display = '';
+          return;
+        }
+        document.getElementById('nikto-empty').style.display = 'none';
+
+        findings.forEach(function(f) {
+          var tr = document.createElement('tr');
+          var sev = f.severity || 'info';
+          var color = SEVERITY_COLORS[sev] || '#6c757d';
+          tr.innerHTML =
+            '<td data-label="URL">' + escHtml(f.url || 'N/A') + '</td>' +
+            '<td data-label="Severity"><span class="service-badge" style="background:' + color + '">' + escHtml(sev) + '</span></td>' +
+            '<td data-label="Message"><span class="finding-message">' + escHtml(f.msg || 'N/A') + '</span></td>';
+          tbody.appendChild(tr);
+        });
+
+        // Truncation banner
+        var truncated = nikto.truncated_count || 0;
+        if (truncated > 0) {
+          var banner = document.getElementById('nikto-truncation');
+          banner.style.display = '';
+          banner.textContent = truncated + ' additional findings not shown. Full results in state/nikto-analyzer/' + escHtml(data.scan_id || '') + '/consolidated.json';
+        }
+
+        // Partial banner
+        if (nikto.partial) {
+          var partialEl = document.getElementById('nikto-partial');
+          partialEl.style.display = '';
+          partialEl.textContent = 'Nikto scan results may be incomplete (partial scan).';
+        }
+      }
+
+      // ======================================================================
+      // 10. DNS Enumeration (dnsenum)
+      // ======================================================================
+      // NS/MX entries are plain strings in the analyzer contract, but accept
+      // object entries too so a future parser shape still renders.
+      function dnsEntryName(entry) {
+        if (entry == null) return '';
+        if (typeof entry === 'string') return entry;
+        return entry.name || entry.host || entry.mx || '';
+      }
+
+      function renderDnsList(list, tbodyId, emptyId) {
+        var tbody = document.getElementById(tbodyId);
+        tbody.innerHTML = '';
+        var names = (list || []).map(dnsEntryName).filter(function(n) { return n !== ''; });
+        if (names.length === 0) {
+          document.getElementById(emptyId).style.display = '';
+          return;
+        }
+        document.getElementById(emptyId).style.display = 'none';
+        names.forEach(function(n) {
+          var tr = document.createElement('tr');
+          tr.innerHTML = '<td data-label="Host">' + escHtml(n) + '</td>';
+          tbody.appendChild(tr);
+        });
+      }
+
+      function renderDns(dns) {
+        if (!dns.present) {
+          hide('section-dns');
+          return;
+        }
+        var ns = dns.ns || [];
+        var mx = dns.mx || [];
+        var zt = dns.zone_transfer || {};
+        var count = dns.subdomain_count != null ? dns.subdomain_count : (dns.subdomains || []).length;
+        if (ns.length === 0 && mx.length === 0 && count === 0 && !zt.success) {
+          hide('section-dns');
+          return;
+        }
+        show('section-dns');
+
+        var parts = [];
+        if (dns.domain) parts.push('Domain: ' + escHtml(dns.domain));
+        parts.push('Subdomains discovered: ' + count);
+        document.getElementById('dns-summary').innerHTML = parts.join(' | ');
+
+        renderDnsList(ns, 'dns-ns-tbody', 'dns-ns-empty');
+        renderDnsList(mx, 'dns-mx-tbody', 'dns-mx-empty');
+
+        // Zone transfer
+        var ztEl = document.getElementById('dns-axfr');
+        if (zt.success) {
+          var recordCount = (zt.records || []).length;
+          ztEl.innerHTML = '<span class="severity-badge" style="background:' + SEVERITY_COLORS.medium + '">Allowed</span> ' +
+            escHtml(recordCount + ' record(s) readable by any host — the whole zone is enumerable.');
+        } else if (zt.attempted === false) {
+          ztEl.innerHTML = '<span class="severity-badge" style="background:' + SEVERITY_COLORS.none + '">Not attempted</span>';
+        } else {
+          ztEl.innerHTML = '<span class="severity-badge" style="background:' + SEVERITY_COLORS.none + '">Refused</span> Zone transfer was attempted and denied.';
+        }
+
+        var warn = document.getElementById('dns-axfr-warning');
+        if (zt.success) {
+          warn.style.display = '';
+          warn.textContent = 'AXFR SUCCEEDED — a full zone dump was readable. ' +
+            ((zt.records || []).length) + ' record(s) captured.';
+        } else {
+          warn.style.display = 'none';
+        }
+
+        if (dns.partial) {
+          var partialEl = document.getElementById('dns-partial');
+          partialEl.style.display = '';
+          partialEl.textContent = 'DNS results may be incomplete (partial scan).';
+        } else {
+          document.getElementById('dns-partial').style.display = 'none';
+        }
+
+        document.getElementById('dns-empty').style.display = 'none';
+      }
+
+      // ======================================================================
+      // 11. Subdomains
+      // ======================================================================
+      function subdomainStatusLabel(s) {
+        if (s.http_status) return 'HTTP ' + s.http_status;
+        if (s.live_web_server === true) return 'Web server live';
+        if (s.live_web_server === false) return 'No live web server';
+        return 'Not probed';
+      }
+
+      function subdomainVulnText(s) {
+        if (!s.has_data) return 'No scan data for this subdomain yet.';
+        if (s.vuln_total > 0) {
+          var counts = s.vuln_severity_counts || {};
+          var parts = [];
+          ['critical', 'high', 'medium', 'low', 'info'].forEach(function(sev) {
+            if (counts[sev] > 0) parts.push(counts[sev] + ' ' + sev);
+          });
+          var summary = s.vuln_total + ' nuclei finding(s)';
+          if (parts.length > 0) summary += ' (' + parts.join(', ') + ')';
+          if (s.top_vulns && s.top_vulns.length > 0) {
+            summary += ' — top: ' + s.top_vulns.map(function(v) {
+              return v.name + ' (' + v.severity + ')';
+            }).join('; ');
+          }
+          return summary;
+        }
+        if (s.nikto_findings > 0) return s.nikto_findings + ' nikto finding(s), no nuclei matches.';
+        if (s.tech && s.tech.length > 0) return 'No findings. ' + s.tech.length + ' technolog(ies) fingerprinted.';
+        return 'No findings.';
+      }
+
+      function renderSubdomains(d) {
+        // No subdomains key at all: the dns source never ran, so the section
+        // has nothing to report. An empty array is a real "none found".
+        if (!d.subdomains) {
+          hide('section-subdomains');
+          return;
+        }
+        var subs = d.subdomains;
+        var total = d.subdomain_total != null ? d.subdomain_total : subs.length;
+
+        show('section-subdomains');
+        document.getElementById('subdomains-count').textContent =
+          'Discovered: ' + total + (subs.length < total ? ' (showing ' + subs.length + ')' : '');
+
+        var grid = document.getElementById('subdomains-cards');
+        grid.innerHTML = '';
+        var emptyEl = document.getElementById('subdomains-empty');
+
+        if (subs.length === 0) {
+          emptyEl.style.display = '';
+          grid.innerHTML = '';
+        } else {
+          emptyEl.style.display = 'none';
+          subs.forEach(function(s) {
+            var card = document.createElement('div');
+            card.className = 'subdomain-card';
+
+            var h3 = document.createElement('h3');
+            var a = document.createElement('a');
+            a.href = s.report || '#';
+            a.textContent = s.name;
+            h3.appendChild(a);
+            card.appendChild(h3);
+
+            var ipEl = document.createElement('div');
+            ipEl.className = 'subdomain-field';
+            ipEl.textContent = s.ip ? 'IP: ' + s.ip : 'IP: unresolved';
+            card.appendChild(ipEl);
+
+            var statusEl = document.createElement('div');
+            statusEl.className = 'subdomain-field';
+            statusEl.textContent = 'Status: ' + subdomainStatusLabel(s);
+            card.appendChild(statusEl);
+
+            if (s.tech && s.tech.length > 0) {
+              var techWrap = document.createElement('div');
+              techWrap.className = 'tech-cloud';
+              s.tech.forEach(function(t) {
+                var b = document.createElement('span');
+                b.className = 'tech-badge';
+                b.textContent = t;
+                techWrap.appendChild(b);
+              });
+              card.appendChild(techWrap);
+            } else {
+              var techNone = document.createElement('div');
+              techNone.className = 'subdomain-muted';
+              techNone.textContent = 'No technologies fingerprinted.';
+              card.appendChild(techNone);
+            }
+
+            var vulnEl = document.createElement('div');
+            vulnEl.className = 'subdomain-vuln';
+            vulnEl.textContent = subdomainVulnText(s);
+            card.appendChild(vulnEl);
+
+            grid.appendChild(card);
+          });
+        }
+
+        var note = document.getElementById('subdomains-note');
+        if (d.subdomains_additional > 0) {
+          note.style.display = '';
+          note.textContent = d.subdomains_additional + ' further subdomain(s) discovered but not reported here — expansion covers the first ' +
+            subs.length + '. Raise expansion.max_targets_per_vector to widen it.';
+        } else {
+          note.style.display = 'none';
+        }
+      }
+
+      // ======================================================================
+      // 12. Scan Timeline
+      // ======================================================================
+      function renderTimeline(sources) {
+        var timeline = document.getElementById('timeline');
+        timeline.innerHTML = '';
+
+        var sourceMeta = [
+          { key: 'nmap',   label: 'Nmap Scanner' },
+          { key: 'nuclei', label: 'Nuclei Scanner' },
+          { key: 'whatweb', label: 'WhatWeb' },
+          { key: 'testssl', label: 'testssl.sh' },
+          { key: 'httpx',  label: 'HTTP Probe (httpx)' },
+          { key: 'nikto',  label: 'Nikto Scanner' },
+          { key: 'dns',    label: 'DNS Enumeration (dnsenum)' }
+        ];
+
+        sourceMeta.forEach(function(meta) {
+          var src = sources[meta.key];
+          var item = document.createElement('div');
+          item.className = 'timeline-item';
+
+          var name = document.createElement('div');
+          name.className = 'source-name';
+          name.textContent = meta.label;
+          item.appendChild(name);
+
+          if (src && src.present) {
+            var status = document.createElement('div');
+            status.className = 'source-status present';
+            status.textContent = fmtDate(src.started_at || data.generated_at);
+            item.appendChild(status);
+          } else {
+            var status = document.createElement('div');
+            status.className = 'source-status absent';
+            status.textContent = 'Not run';
+            item.appendChild(status);
+          }
+
+          timeline.appendChild(item);
+        });
+      }
+
+      // ======================================================================
+      // Render everything
+      // ======================================================================
+      renderHeader(data);
+      renderPorts(data.sources && data.sources.nmap ? data.sources.nmap : { present: false });
+      renderTechs(data.sources && data.sources.whatweb ? data.sources.whatweb : { present: false });
+      renderTLS(data.sources && data.sources.testssl ? data.sources.testssl : { present: false });
+      renderNuclei(data.sources && data.sources.nuclei ? data.sources.nuclei : { present: false });
+      renderCert(data.sources && data.sources.testssl ? data.sources.testssl : { present: false });
+      renderHeaders(data.sources && data.sources.whatweb ? data.sources.whatweb : { present: false });
+      renderHttpx(data.sources && data.sources.httpx ? data.sources.httpx : { present: false });
+      renderNikto(data.sources && data.sources.nikto ? data.sources.nikto : { present: false });
+      renderDns(data.sources && data.sources.dns ? data.sources.dns : { present: false });
+      renderSubdomains(data);
+      renderTimeline(data.sources || {});
+    });
+  </script>
+</body>
+</html>

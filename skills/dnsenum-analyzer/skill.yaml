@@ -1,0 +1,48 @@
+# skills/dnsenum-analyzer/skill.yaml
+# Sub-skill: Consolidate DNS discovery results, score severity, route
+# sub-target next_vectors (httpx / nuclei / whatweb over discovered subdomains)
+---
+name: dnsenum-analyzer
+version: "1.0.0"
+description: >
+  Reads dnsenum-scan parsed-results.json, re-applies the wildcard guard, and
+  writes the DNS analyzer contract (subdomains, NS, MX, zone transfer,
+  severity) plus next_vectors that carry the discovered subdomains as
+  `targets` so the engine can fan out one expanded step per downstream skill.
+main_script: "skills/dnsenum-analyzer/main.sh"
+dependencies:
+  - jq
+
+inputs:
+  target:
+    type: string
+    required: true
+    description: "Target domain that was enumerated"
+  scan_id:
+    type: string
+    required: true
+    description: "Unique scan identifier"
+
+outputs:
+  consolidated.json:
+    type: object
+    description: "scan_id, target, started_at, domain, subdomains, subdomain_count, ns, mx, zone_transfer, severity, next_vectors, partial"
+  next_vectors.json:
+    type: array
+    description: "Downstream skill suggestions, each carrying a capped targets array"
+
+next_vectors:
+  - condition: "subdomains discovered"
+    skill: httpx
+    weight: 90
+    reason: "Subdomains discovered — probe live HTTP on each one"
+  - condition: "subdomains discovered"
+    skill: nuclei
+    weight: 80
+    reason: "Subdomains discovered — vulnerability scanning on the new attack surface"
+  - condition: "subdomains discovered"
+    skill: whatweb
+    weight: 70
+    reason: "Subdomains discovered — fingerprint the technology stack"
+
+timeout: 7200

@@ -1,0 +1,33 @@
+# skills/dnsenum-sysreport/skill.yaml
+# Sub-skill: Render the DNS analyzer contract as human-readable reports
+---
+name: dnsenum-sysreport
+version: "1.0.0"
+description: >
+  Reads dnsenum-analyzer consolidated.json and writes sysreport.yaml and
+  sysreport.json under reports/{target}/dnsenum/{timestamp}/, covering
+  subdomains, nameservers, mail exchanges, zone transfer result and the
+  proposed next_vectors.
+main_script: "skills/dnsenum-sysreport/main.sh"
+dependencies:
+  - jq
+
+inputs:
+  target:
+    type: string
+    required: true
+    description: "Target domain that was enumerated"
+  scan_id:
+    type: string
+    required: true
+    description: "Unique scan identifier"
+
+outputs:
+  sysreport.yaml:
+    type: file
+    description: "Human-readable YAML report (reports/{target}/dnsenum/{timestamp}/)"
+  sysreport.json:
+    type: file
+    description: "Machine-readable JSON report (reports/{target}/dnsenum/{timestamp}/)"
+
+timeout: 600

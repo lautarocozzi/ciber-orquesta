@@ -439,7 +439,7 @@ with open(tpl_file) as f:
 with open(data_file) as f:
     report_data = json.load(f)
 
-html = template.replace('{{REPORT_DATA}}', json.dumps(report_data))
+html = template.replace('{{REPORT_DATA}}', json.dumps(report_data).replace('</', '<\\/'))
 html = html.replace('{{TARGET}}', target)
 html = html.replace('{{SCAN_ID}}', scan_id)
 

@@ -212,9 +212,10 @@ def cli_env(state_dir: Path, *, stub_tools=False):
     env["STATE_DIR"] = str(state_dir)
     env["REPORTS_DIR"] = str(state_dir.parent / (state_dir.name + "-reports"))
     # engine/event_bus.py snapshots EVENTS_DIR at import and defaults it to the
-    # RELATIVE path "events". main.py writes the opening event BEFORE the
-    # dry_run branch, so without this a *dry run* drops events/engine/*.json
-    # into the real checkout. See the FINDING note in P3.
+    # RELATIVE path "events". main.py no longer writes an opening event on a dry
+    # run, but the redirect stays: it keeps P3e a real guard — it proves the
+    # assertion fails when a write DOES land, rather than passing because the
+    # dir was never created at the default location.
     env["EVENTS_DIR"] = str(state_dir.parent / (state_dir.name + "-events"))
     env["STEP_TIMEOUT_SECONDS"] = "7200"
     if stub_tools:
@@ -449,8 +450,9 @@ def run():
         str(p.relative_to(stub_state)) for p in stub_state.rglob("*")
         if p.is_file() and str(p.relative_to(stub_state)) not in fixture_paths
     )
-    ck("P3c the dry run's own state write is confined to its engine scan dir "
-       "(no skill ever wrote state)", all(w.startswith("engine/") for w in written), str(written))
+    ck("P3c no skill wrote state during the dry run — nothing at all was written "
+       "into STATE_DIR (the engine writes none either; P3e/P4f cover that)",
+       written == [], str(written))
     ck("P3d the anchor state dir was read, never written",
        tree_fingerprint(stub_state / ANCHOR_SKILL) == fixture_fp)
     ev_dir = stub_state.parent / (stub_state.name + "-events")

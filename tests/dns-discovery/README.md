@@ -24,10 +24,11 @@ own `=== RESULT: <n> passed, <n> failed` line.
 | `dns_verify.py` | 71 | The DNS chain end to end with **stubbed** `dnsenum`/`dig`: fast-flag argv, wildcard-DNS probe and guard, XML/subfile/log parsing, the 12-key analyzer contract, domain-scope filtering (out-of-scope CNAMEs must not reach `next_vectors`), subdomain discovery, and every degradation rung (truncated XML, missing binary, corrupt input). |
 | `engine_expansion.py` | 34 | `WorkflowEngine._expand_from_anchor`: per-vector `targets`, the `max_targets_per_vector` cap, `(skill, sorted-targets)` dedup, hashed step ids, `STEP_TIMEOUT_SECONDS` resolution, the static-skill bypass, no-targets regression parity with the pre-change algorithm, `expansion_anchor` selection, and the degradation rungs (anchor not done, `next_vectors.json` missing/corrupt, non-string targets). |
 | `report_verify.py` | 57 | `report-html` dual result: the 7th `dns` source, parent DNS + SUBDOMAINS sections, per-subdomain child reports, root-scoped source resolution (a deliberately poisoned shared dir must not taint the parent), unsafe-name handling, and a stored-`</script>`-breakout injection probe. |
+| `preview_parity.py` | 70 | The dry-run expansion preview (PR #6): `preview_expansion()` vs. the real `WorkflowEngine._expand_from_anchor()` step-for-step parity over the same anchor state, the CLI dry-run contract cold (exit 0, "no anchor state" note, zero `exp-*`) and warm (exit 0, `exp-<skill>-dns-analyzer-<8hex>` with the discovered subdomains), proof that neither path spawns a tool or writes, and the path guard for a traversal-shaped target. |
 
 `_harness.py` is a shared helper, not a runnable harness.
 
-Total: **162 checks**.
+Total: **232 checks**.
 
 ## These are offline checks — read this before trusting a green run
 
@@ -47,9 +48,32 @@ Two further environment caveats:
   declares dependency `httpx-pd`, which is not a Kali package name. Kali ships
   projectdiscovery's tool as `httpx-toolkit`. Until the dependency name is
   aligned and the tool installed, `exp-httpx` is never emitted here.
+  `preview_parity.py` derives its expected `exp-*` set from what the host
+  actually registers, so it stays green either way — the fixture still carries
+  the `httpx` vector, and both paths skip it identically.
 - `report_verify.py`'s XSS probe (X1–X5) is the regression guard for the
   `</script>` breakout fixed in `57c9c8d`. If you see it fail, do not "fix" the
   assertion — the escaping in `generate-report.sh` regressed.
+
+## Findings these harnesses turned up (not yet fixed)
+
+- **A `--dry-run` is not read-only on disk.** `main.py:196` calls
+  `write_event()` *before* the `dry_run` branch, and `EVENTS_DIR` defaults to
+  the relative `events/` (`engine/event_bus.py:22`). `STATE_DIR` does not cover
+  it, so a plain `--dry-run` drops `events/engine/<id>.json` into the real
+  checkout. `preview_parity.py` redirects `EVENTS_DIR` and pins the resulting
+  single-event shape in P3e.
+- **The wildcard guard lives only in the analyzer, not the engine.**
+  `preview_expansion()` re-applies no name filter beyond
+  `isinstance(t, str) and t.strip()`, so a hostile `targets` entry in a vector
+  reaches `step.targets` verbatim (P5e). The traversal *path* is safe —
+  `_target_slug` neutralizes it and the CLI rejects a traversal `--target`
+  outright — but the engine trusts the analyzer to have filtered names.
+- **`dns-discovery` is a permanent no-op anchor.** It carries
+  `expansion_anchor: true`, yet its skill (`dnsenum-scan`) never writes
+  `next_vectors.json`. Relatedly, `workflow.expansion.anchor_steps` lists 8
+  steps while 9 carry the flag, and that list is dead config —
+  `_anchor_steps_for()` reads the `metadata` flag only.
 
 ## Adding a harness
 

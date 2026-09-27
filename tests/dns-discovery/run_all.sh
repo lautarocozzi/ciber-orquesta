@@ -23,7 +23,7 @@ for marker in engine skills workflows; do
     fi
 done
 
-ALL=(dns_verify report_verify engine_expansion)
+ALL=(dns_verify report_verify engine_expansion preview_parity)
 SELECTED=("$@")
 if [ ${#SELECTED[@]} -eq 0 ]; then
     SELECTED=("${ALL[@]}")

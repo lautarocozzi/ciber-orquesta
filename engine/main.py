@@ -192,18 +192,23 @@ async def run_scan(
     # Resolve template variables in workflow steps
     _resolve_workflow_target(workflow, target)
 
-    # Write initial event
-    write_event(
-        skill="engine",
-        scan_id=scan_id,
-        target=target,
-        parameters={"workflow": workflow.name, "profile": workflow.scan_profile},
-    )
-    await write_state(
-        scan_id=scan_id,
-        data={"target": target, "workflow": workflow.name, "status": "running"},
-        skill="engine",
-    )
+    # Write initial event + running state. A dry run must be side-effect free,
+    # so these are emitted only on the real execution path — before the
+    # dry_run branch, write_event() dropped events/engine/<id>.json into the
+    # checkout (EVENTS_DIR defaults to the relative "events/", which STATE_DIR
+    # does not cover).
+    if not dry_run:
+        write_event(
+            skill="engine",
+            scan_id=scan_id,
+            target=target,
+            parameters={"workflow": workflow.name, "profile": workflow.scan_profile},
+        )
+        await write_state(
+            scan_id=scan_id,
+            data={"target": target, "workflow": workflow.name, "status": "running"},
+            skill="engine",
+        )
 
     if dry_run:
         logger.info("DRY RUN: workflow validated, would execute %d steps", len(workflow.steps))

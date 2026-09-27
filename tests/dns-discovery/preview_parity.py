@@ -455,13 +455,14 @@ def run():
        tree_fingerprint(stub_state / ANCHOR_SKILL) == fixture_fp)
     ev_dir = stub_state.parent / (stub_state.name + "-events")
     ev_files = sorted(str(p.relative_to(ev_dir)) for p in ev_dir.rglob("*") if p.is_file())
-    ck("P3e the dry run wrote exactly ONE opening event, into the redirected EVENTS_DIR",
-       len(ev_files) == 1 and ev_files[0].startswith("engine/"), str(ev_files))
-    info("FINDING (main.py:196 + engine/event_bus.py:22): write_event() runs BEFORE the "
-         "dry_run branch and EVENTS_DIR defaults to the relative 'events/', so a plain "
-         "`--dry-run` writes events/engine/<id>.json into the real checkout. STATE_DIR does "
-         "not cover it. Harmless for a preview, but it means a dry run is NOT read-only on "
-         "disk. P3e pins the redirect this harness needs.")
+    ck("P3e the dry run is read-only on disk: ZERO events written, even with a "
+       "writable EVENTS_DIR", ev_files == [], str(ev_files))
+    info("FIXED (was a finding): write_event()/write_state() used to run BEFORE the "
+         "dry_run branch and EVENTS_DIR defaults to the relative 'events/', which "
+         "STATE_DIR does not cover — so a plain `--dry-run` dropped "
+         "events/engine/<id>.json into the checkout. main.py now emits the opening "
+         "event only when not dry_run. P3e was inverted from 'exactly ONE opening "
+         "event' to 'zero events': the assertion got stronger, not weaker.")
 
     # -----------------------------------------------------------------------
     # P4 — the dry-run contract, COLD and WARM
@@ -482,8 +483,8 @@ def run():
        "Steps (27):" in cold_out and not expanded_lines(cold_out), str(expanded_lines(cold_out)))
     ck("P4e COLD previews no subdomain target",
        not any(s in cold_out for s in subs), "a subdomain leaked into a cold preview")
-    ck("P4f COLD created no anchor state (only its own engine scan dir)",
-       sorted(p.name for p in cold_state.iterdir()) == ["engine"],
+    ck("P4f COLD created NOTHING in STATE_DIR — a dry run is read-only end to end",
+       sorted(p.name for p in cold_state.iterdir()) == [],
        str(sorted(p.name for p in cold_state.iterdir())))
 
     section("P4: dry-run contract -- WARM (anchor state on disk)")

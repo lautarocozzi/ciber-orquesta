@@ -55,14 +55,16 @@ Two further environment caveats:
   `</script>` breakout fixed in `57c9c8d`. If you see it fail, do not "fix" the
   assertion — the escaping in `generate-report.sh` regressed.
 
-## Findings these harnesses turned up (not yet fixed)
+## Findings these harnesses turned up
 
-- **A `--dry-run` is not read-only on disk.** `main.py:196` calls
-  `write_event()` *before* the `dry_run` branch, and `EVENTS_DIR` defaults to
-  the relative `events/` (`engine/event_bus.py:22`). `STATE_DIR` does not cover
-  it, so a plain `--dry-run` drops `events/engine/<id>.json` into the real
-  checkout. `preview_parity.py` redirects `EVENTS_DIR` and pins the resulting
-  single-event shape in P3e.
+- ~~**A `--dry-run` is not read-only on disk.**~~ **FIXED.** `main.py:196`
+  called `write_event()` *before* the `dry_run` branch, and `EVENTS_DIR` defaults
+  to the relative `events/` (`engine/event_bus.py:22`), which `STATE_DIR` does
+  not cover — so a plain `--dry-run` dropped `events/engine/<id>.json` into the
+  checkout. `main.py` now emits the opening event and running state only when
+  `not dry_run`. P3e and P4f were inverted to assert **zero** writes (they used
+  to pin the buggy shape, so they got stronger, not weaker). A real run still
+  writes its full event trail.
 - **The wildcard guard lives only in the analyzer, not the engine.**
   `preview_expansion()` re-applies no name filter beyond
   `isinstance(t, str) and t.strip()`, so a hostile `targets` entry in a vector
